@@ -1,6 +1,6 @@
 [project]
 name = "droidrun"
-version = "0.3.0"
+version = "0.3.1"
 description = "A framework for controlling Android devices through LLM agents"
 authors = [
     {name = "Niels Schmidt", email = "niels.schmidt@droidrun.ai"},
@@ -18,11 +18,11 @@ dependencies = [
     "llama-index-callbacks-arize-phoenix",
     "arize-phoenix",
     "llama-index-llms-openai",
-    "llama-index-llms-gemini",
+    "llama-index-llms-openai-like",
+    "llama-index-llms-google-genai",
     "llama-index-llms-deepseek",
     "llama-index-llms-anthropic",
     "llama-index-llms-ollama",
-    #"chromadb>=1.0.12",
 ]
 requires-python = ">=3.10"
 readme = "README.md"
@@ -85,4 +85,4 @@ select = [
     "F",  # pyflakes
     "I",  # isort
     "B",  # flake8-bugbear
-] 
+]
