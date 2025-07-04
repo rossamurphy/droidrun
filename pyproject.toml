@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "llama-index",
     "llama-index-callbacks-arize-phoenix",
+    "llama-index-llms-gemini",
     "arize-phoenix",
     "llama-index-llms-openai",
     "llama-index-llms-openai-like",
