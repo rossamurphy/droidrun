@@ -140,6 +140,7 @@ class PlannerAgent(Workflow):
             await ctx.set("ui_state", state["a11y_tree"])
             await ctx.set("phone_state", state["phone_state"])
         except Exception as e:
+            logger.warning(f"Exception Raised: {e}")
             logger.warning(f"⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?")
 
 

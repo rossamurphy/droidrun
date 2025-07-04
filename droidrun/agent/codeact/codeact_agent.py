@@ -184,6 +184,7 @@ class CodeActAgent(Workflow):
                     )
                     chat_history = await chat_utils.add_phone_state_block(state["phone_state"], chat_history)
                 except Exception as e:
+                    logger.warning(f"Exception Raised: {e}")
                     logger.warning(f"⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?")
 
 
