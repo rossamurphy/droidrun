@@ -19,11 +19,12 @@ from droidrun.tools.tools import Tools
 class AdbTools(Tools):
     """Core UI interaction tools for Android device control."""
 
-    def __init__(self, serial: str) -> None:
+    def __init__(self, serial: str, adb_path: str ="adb") -> None:
         # Instance‐level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
         self.serial = serial
-        self.device_manager = DeviceManager()
+        self.adb_path = adb_path
+        self.device_manager = DeviceManager(adb_path=adb_path)
         self.last_screenshot = None
         self.reason = None
         self.success = None
@@ -92,8 +93,7 @@ class AdbTools(Tools):
         try:
             # Get the device
             if serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(serial)
+                device = await self.device_manager.get_device(serial)
                 if not device:
                     raise ValueError(f"Device {serial} not found")
             else:
@@ -166,6 +166,7 @@ class AdbTools(Tools):
 
                         # Filter out the "type" attribute from all elements
                         filtered_data = []
+                        device_manager = DeviceManager(adb_path=self.adb_path)
                         for element in ui_data:
                             # Create a copy of the element without the "type" attribute
                             filtered_element = {
@@ -285,8 +286,7 @@ class AdbTools(Tools):
 
             # Get the device and tap at the coordinates
             if serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(serial)
+                device = await self.device_manager.get_device(serial)
                 if not device:
                     return f"Error: Device {serial} not found"
             else:
@@ -333,8 +333,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     return f"Error: Device {self.serial} not found"
             else:
@@ -380,8 +379,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     return f"Error: Device {self.serial} not found"
             else:
@@ -408,8 +406,7 @@ class AdbTools(Tools):
         """
         try:
             if serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(serial)
+                device = await self.device_manager.get_device(serial)
                 if not device:
                     return f"Error: Device {serial} not found"
             else:
@@ -462,8 +459,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     return f"Error: Device {self.serial} not found"
             else:
@@ -488,8 +484,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     return f"Error: Device {self.serial} not found"
             else:
@@ -517,8 +512,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     return f"Error: Device {self.serial} not found"
             else:
@@ -542,8 +536,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     return f"Error: Device {self.serial} not found"
             else:
@@ -565,8 +558,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     raise ValueError(f"Device {self.serial} not found")
             else:
@@ -598,8 +590,7 @@ class AdbTools(Tools):
         """
         try:
             if self.serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(self.serial)
+                device = await self.device_manager.get_device(self.serial)
                 if not device:
                     raise ValueError(f"Device {self.serial} not found")
             else:
@@ -669,8 +660,7 @@ class AdbTools(Tools):
         """
         try:
             # Get the device
-            device_manager = DeviceManager()
-            device = await device_manager.get_device(self.serial)
+            device = await self.device_manager.get_device(self.serial)
             if not device:
                 raise ValueError(f"Device {self.serial} not found")
 
@@ -786,8 +776,7 @@ class AdbTools(Tools):
         try:
             # Get the device
             if serial:
-                device_manager = DeviceManager()
-                device = await device_manager.get_device(serial)
+                device = await self.device_manager.get_device(serial)
                 if not device:
                     raise ValueError(f"Device {serial} not found")
             else:

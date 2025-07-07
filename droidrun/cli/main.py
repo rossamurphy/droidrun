@@ -62,6 +62,7 @@ async def run_command(
     tracing: bool,
     debug: bool,
     save_trajectory: bool = False,
+    adb_path: str = "adb",
     **kwargs,
 ):
     """Run a command on your Android device using natural language."""
@@ -91,7 +92,7 @@ async def run_command(
             else:
                 logger.info(f"📱 Using device: {device}")
 
-            tools = AdbTools(serial=device)
+            tools = AdbTools(serial=device, adb_path=adb_path)
 
             # LLM setup
             log_handler.update_step("Initializing LLM...")
@@ -276,6 +277,7 @@ def run(
     tracing: bool,
     debug: bool,
     save_trajectory: bool,
+    adb_path: str = "adb",
 ):
     """Run a command on your Android device using natural language."""
     # Call our standalone function
@@ -290,7 +292,8 @@ def run(
         tracing,
         debug,
         temperature=temperature,
-        save_trajectory=save_trajectory
+        save_trajectory=save_trajectory,
+        adb_path=adb_path
     )
 
 
