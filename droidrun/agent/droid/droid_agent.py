@@ -8,6 +8,7 @@ from typing import List
 
 from llama_index.core.llms.llm import LLM
 from llama_index.core.workflow import step, StartEvent, StopEvent, Workflow, Context
+from llama_index.core.workflow.handler import WorkflowHandler
 from droidrun.agent.droid.events import *
 from droidrun.agent.codeact import CodeActAgent
 from droidrun.agent.codeact.events import EpisodicMemoryEvent
@@ -21,6 +22,7 @@ from droidrun.agent.context import ContextInjectionManager
 from droidrun.agent.context.agent_persona import AgentPersona
 from droidrun.agent.context.personas import DEFAULT
 from droidrun.agent.oneflows.reflector import Reflector
+from droidrun.telemetry import capture, flush, DroidAgentInitEvent, DroidAgentFinalizeEvent
 
 
 logger = logging.getLogger("droidrun")
@@ -61,11 +63,11 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         personas: List[AgentPersona] = [DEFAULT],
         max_steps: int = 15,
         timeout: int = 1000,
+        vision: bool = False,
         reasoning: bool = False,
         reflection: bool = False,
         enable_tracing: bool = False,
         debug: bool = False,
-        device_serial: str = None,
         save_trajectories: bool = False,
         *args,
         **kwargs
@@ -83,11 +85,9 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             reflection: Whether to reflect on steps the CodeActAgent did to give the PlannerAgent advice
             enable_tracing: Whether to enable Arize Phoenix tracing
             debug: Whether to enable verbose debug logging
-            device_serial: Target Android device serial number
             **kwargs: Additional keyword arguments to pass to the agents
         """
         super().__init__(timeout=timeout ,*args,**kwargs)
-        
         # Configure default logging if not already configured
         self._configure_default_logging(debug=debug)
         
@@ -103,13 +103,13 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
 
         self.goal = goal
         self.llm = llm
+        self.vision = vision
         self.max_steps = max_steps
         self.max_codeact_steps = max_steps
         self.timeout = timeout
         self.reasoning = reasoning
         self.reflection = reflection
         self.debug = debug
-        self.device_serial = device_serial
 
         self.event_counter = 0
         self.save_trajectories = save_trajectories
@@ -131,6 +131,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             self.planner_agent = PlannerAgent(
                 goal=goal,
                 llm=llm,
+                vision=vision,
                 personas=personas,
                 task_manager=self.task_manager,
                 tools_instance=tools,
@@ -146,8 +147,32 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         else:
             logger.debug("🚫 Planning disabled - will execute tasks directly with CodeActAgent")
             self.planner_agent = None
+
+        capture(
+            DroidAgentInitEvent(
+                goal=goal,
+                llm=llm.class_name(),
+                tools=",".join(self.tool_list),
+                personas=",".join([p.name for p in personas]),
+                max_steps=max_steps,
+                timeout=timeout,
+                vision=vision,
+                reasoning=reasoning,
+                reflection=reflection,
+                enable_tracing=enable_tracing,
+                debug=debug,
+                save_trajectories=save_trajectories,
+            )
+        )
+
         
         logger.info("✅ DroidAgent initialized successfully.")
+
+    def run(self) -> WorkflowHandler:
+        """
+        Run the DroidAgent workflow.
+        """
+        return super().run()
     
     @step
     async def execute_task(
@@ -174,6 +199,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             codeact_agent = CodeActAgent(
                 llm=self.llm,
                 persona=persona,
+                vision=self.vision,
                 max_steps=self.max_codeact_steps,
                 all_tools_list=self.tool_list,
                 tools_instance=self.tools_instance,
@@ -203,14 +229,14 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             if self.debug:
                 import traceback
                 logger.error(traceback.format_exc())
-            return CodeActResultEvent(success=False, reason=f"Error: {str(e)}", task=task, steps=result["codeact_steps"])
+            return CodeActResultEvent(success=False, reason=f"Error: {str(e)}", task=task, steps=[])
     
     @step
     async def handle_codeact_execute(self, ctx: Context, ev: CodeActResultEvent) -> FinalizeEvent | ReflectionEvent:
         try:
             task = ev.task
             if not self.reasoning:
-                return FinalizeEvent(success=ev.success, reason=ev.reason, task=[task], steps=ev.steps)
+                return FinalizeEvent(success=ev.success, reason=ev.reason, output=ev.reason, task=[task], tasks=[task], steps=ev.steps)
             
             if self.reflection:
                 return ReflectionEvent(task=task)
@@ -222,7 +248,8 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             if self.debug:
                 import traceback
                 logger.error(traceback.format_exc())
-            return FinalizeEvent(success=False, reason=str(e), task=self.task_manager.get_task_history(), steps=self.step_counter)
+            tasks = self.task_manager.get_task_history()
+            return FinalizeEvent(success=False, reason=str(e), output=str(e), task=tasks, tasks=tasks, steps=self.step_counter)
         
 
     @step
@@ -258,7 +285,9 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         ) -> FinalizeEvent | CodeActExecuteEvent:
         try:
             if self.step_counter >= self.max_steps:
-                return FinalizeEvent(success=False, reason=f"Reached maximum number of steps ({self.max_steps})", task=self.task_manager.get_task_history(), steps=self.step_counter)
+                output = f"Reached maximum number of steps ({self.max_steps})"
+                tasks = self.task_manager.get_task_history()
+                return FinalizeEvent(success=False, reason=output, output=output, task=tasks, tasks=tasks, steps=self.step_counter)
             self.step_counter += 1
 
             if ev.reflection:
@@ -285,10 +314,13 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
 
             if self.task_manager.goal_completed:
                 logger.info(f"✅ Goal completed: {self.task_manager.message}")
-                return FinalizeEvent(success=True, reason=self.task_manager.message, task=self.task_manager.get_task_history(), steps=self.step_counter)
+                tasks = self.task_manager.get_task_history()
+                return FinalizeEvent(success=True, reason=self.task_manager.message, output=self.task_manager.message, task=tasks, tasks=tasks, steps=self.step_counter)
             if not self.tasks:
                 logger.warning("No tasks generated by planner")
-                return FinalizeEvent(success=False, reason="Planner did not generate any tasks", task=self.task_manager.get_task_history(), steps=self.step_counter)
+                output = "Planner did not generate any tasks"
+                tasks = self.task_manager.get_task_history()
+                return FinalizeEvent(success=False, reason=output, output=output, task=tasks, tasks=tasks, steps=self.step_counter)
             
             return CodeActExecuteEvent(task=next(self.task_iter), reflection=None)
         
@@ -297,7 +329,8 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             if self.debug:
                 import traceback
                 logger.error(traceback.format_exc())
-            return FinalizeEvent(success=False, reason=str(e), task=self.task_manager.get_task_history(), steps=self.step_counter)
+            tasks = self.task_manager.get_task_history()
+            return FinalizeEvent(success=False, reason=str(e), output=str(e), task=tasks, tasks=tasks, steps=self.step_counter)
     
 
     @step
@@ -309,6 +342,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             Dict containing the execution result
         """
         logger.info(f"🚀 Running DroidAgent to achieve goal: {self.goal}")
+        ctx.write_event_to_stream(ev)
         
         self.step_counter = 0
         self.retry_counter = 0
@@ -329,10 +363,21 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
     @step
     async def finalize(self, ctx: Context, ev: FinalizeEvent) -> StopEvent:
         ctx.write_event_to_stream(ev)
+        capture(
+            DroidAgentFinalizeEvent(
+                tasks=",".join([f"{t.agent_type}:{t.description}" for t in ev.task]),
+                success=ev.success,
+                output=ev.output,
+                steps=ev.steps,
+            )
+        )
+        flush()
 
         result = {
             "success": ev.success,
+            # deprecated. use output instead.
             "reason": ev.reason,
+            "output": ev.output,
             "steps": ev.steps,
         }
 

@@ -11,6 +11,48 @@
   "navigation": {
     "versions": [
       {
+        "version": "0.3.2",
+        "groups": [
+          {
+            "group": "Introduction",
+            "pages": [
+              "v3/overview",
+              "v3/quickstart"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "v3/guides/overview",
+              "v3/guides/cli",
+              "v3/guides/gemini",
+              "v3/guides/openailike",
+              "v3/guides/ollama",
+              "v3/guides/telemetry"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "v3/concepts/agent",
+              "v3/concepts/models",
+              "v3/concepts/android-tools",
+              "v3/concepts/portal-app"
+            ]
+          },
+          {
+            "group": "SDK Reference",
+            "pages": [
+              "v3/sdk/droid-agent",
+              "v3/sdk/adb-tools",
+              "v3/sdk/ios-tools",
+              "v3/sdk/base-tools",
+              "v3/sdk/adb-utils"
+            ]
+          }
+        ]
+      },
+      {
         "version": "0.2.0",
         "groups": [
           {
@@ -63,17 +105,29 @@
       {
         "label": "GitHub",
         "href": "https://github.com/droidrun/droidrun"
+      },
+      {
+        "label": "Benchmark",
+        "href": "https://droidrun.ai/benchmark"
       }
     ],
     "primary": {
       "type": "button",
-      "label": "Get Started",
-      "href": "https://github.com/droidrun/droidrun"
+      "label": "Join Discord",
+      "href": "https://discord.gg/gdekvkJFvn"
     }
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/droidrun/droidrun"
+      "github": "https://github.com/droidrun/droidrun",
+      "x": "https://x.com/droid_run",
+      "discord": "https://discord.gg/gdekvkJFvn",
+      "website": "https://droidrun.ai"
+    }
+  },
+  "errors": {
+    "404": {
+      "redirect": false
     }
   }
 }
