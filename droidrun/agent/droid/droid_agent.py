@@ -11,7 +11,8 @@ from llama_index.core.workflow import step, StartEvent, StopEvent, Workflow, Con
 from llama_index.core.workflow.handler import WorkflowHandler
 from droidrun.agent.droid.events import *
 from droidrun.agent.codeact import CodeActAgent
-from droidrun.agent.codeact.events import EpisodicMemoryEvent
+from droidrun.agent.codeact.events import EpisodicMemoryEvent, TaskExecutionResultEvent, \
+    TaskInputEvent, TaskThinkingEvent
 from droidrun.agent.planner import PlannerAgent
 from droidrun.agent.context.task_manager import TaskManager
 from droidrun.agent.utils.trajectory import Trajectory
@@ -68,6 +69,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         reflection: bool = False,
         enable_tracing: bool = False,
         debug: bool = False,
+        save_screenshots: bool = True,
         save_trajectories: bool = False,
         *args,
         **kwargs
@@ -113,6 +115,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
 
         self.event_counter = 0
         self.save_trajectories = save_trajectories
+        self.save_screenshots = save_screenshots
         
         self.trajectory = Trajectory()
         self.task_manager = TaskManager()
@@ -148,22 +151,22 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             logger.debug("🚫 Planning disabled - will execute tasks directly with CodeActAgent")
             self.planner_agent = None
 
-        capture(
-            DroidAgentInitEvent(
-                goal=goal,
-                llm=llm.class_name(),
-                tools=",".join(self.tool_list),
-                personas=",".join([p.name for p in personas]),
-                max_steps=max_steps,
-                timeout=timeout,
-                vision=vision,
-                reasoning=reasoning,
-                reflection=reflection,
-                enable_tracing=enable_tracing,
-                debug=debug,
-                save_trajectories=save_trajectories,
-            )
-        )
+        # capture(
+        #     DroidAgentInitEvent(
+        #         goal=goal,
+        #         llm=llm.class_name(),
+        #         tools=",".join(self.tool_list),
+        #         personas=",".join([p.name for p in personas]),
+        #         max_steps=max_steps,
+        #         timeout=timeout,
+        #         vision=vision,
+        #         reasoning=reasoning,
+        #         reflection=reflection,
+        #         enable_tracing=enable_tracing,
+        #         debug=debug,
+        #         save_trajectories=save_trajectories,
+        #     )
+        # )
 
         
         logger.info("✅ DroidAgent initialized successfully.")
@@ -212,8 +215,17 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
                 remembered_info=self.tools_instance.memory,
                 reflection=reflection
             )
-            
+
+
             async for nested_ev in handler.stream_events():
+                # take a screenshot before each asking LLM step
+                if self.save_screenshots:
+                    if hasattr(self.tools_instance, "take_screenshot"):
+                        if isinstance(nested_ev, TaskInputEvent):
+                            # take a screenshot at every juncture where you are asking
+                            # something of an LLM
+                            # (this is to try and stop duplicating screenshots in the history)
+                            await self.tools_instance.take_screenshot()
                 self.handle_stream_event(nested_ev, ctx)
 
             result = await handler
@@ -363,15 +375,15 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
     @step
     async def finalize(self, ctx: Context, ev: FinalizeEvent) -> StopEvent:
         ctx.write_event_to_stream(ev)
-        capture(
-            DroidAgentFinalizeEvent(
-                tasks=",".join([f"{t.agent_type}:{t.description}" for t in ev.task]),
-                success=ev.success,
-                output=ev.output,
-                steps=ev.steps,
-            )
-        )
-        flush()
+        # capture(
+        #     DroidAgentFinalizeEvent(
+        #         tasks=",".join([f"{t.agent_type}:{t.description}" for t in ev.task]),
+        #         success=ev.success,
+        #         output=ev.output,
+        #         steps=ev.steps,
+        #     )
+        # )
+        # flush()
 
         result = {
             "success": ev.success,
@@ -382,7 +394,8 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         }
 
         if self.trajectory and self.save_trajectories:
-            self.trajectory.save_trajectory()
+            if hasattr(self.tools_instance, "screenshots"):
+                self.trajectory.save_trajectory(screenshots=self.tools_instance.screenshots)
 
         return StopEvent(result)
     

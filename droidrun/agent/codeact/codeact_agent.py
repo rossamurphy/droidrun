@@ -168,6 +168,8 @@ class CodeActAgent(Workflow):
                 logger.warning(
                     "[yellow]DeepSeek doesnt support images. Disabling screenshots[/]"
                 )
+
+
             elif self.vision == True and context == "screenshot":
                 screenshot = (await self.tools.take_screenshot())[1]
                 ctx.write_event_to_stream(ScreenshotEvent(screenshot=screenshot))

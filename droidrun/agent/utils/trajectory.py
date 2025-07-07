@@ -21,28 +21,30 @@ class Trajectory:
     def __init__(self):
         """Initializes an empty trajectory class."""
         self.events: List[Event] = [] 
-        self.screenshots: List[bytes] = [] 
 
 
-    def create_screenshot_gif(self, output_path: str, duration: int = 1000) -> str:
+    def create_screenshot_gif(self, output_path: str, screenshots: list[dict[str, Any]], duration: int = 1500) -> str:
         """
         Create a GIF from a list of screenshots.
         
         Args:
             output_path: Base path for the GIF (without extension)
+            screenshots: List of screenshot dictionaries.
             duration: Duration for each frame in milliseconds
         
         Returns:
             Path to the created GIF file
         """
-        if len(self.screenshots) == 0:
-            return None
-            
+
         images = []
-        for screenshot in self.screenshots:
-            img_data = screenshot
-            img = Image.open(io.BytesIO(img_data))
-            images.append(img)
+        for screenshot in screenshots:
+            screenshot_dict = screenshot
+            bytes_data = screenshot_dict.get('image_data', None)
+            if bytes_data is None:
+                pass
+            else:
+                img = Image.open(io.BytesIO(bytes_data))
+                images.append(img)
         
         # Save as GIF
         gif_path = f"{output_path}.gif"
@@ -59,6 +61,7 @@ class Trajectory:
     def save_trajectory(
         self,
         directory: str = "trajectories",
+        screenshots: list[bytes] = None
     ) -> str:
         """
         Save trajectory steps to a JSON file and create a GIF of screenshots if available.
@@ -113,7 +116,8 @@ class Trajectory:
         with open(json_path, "w") as f:
             json.dump(serializable_events, f, indent=2)
 
-        self.create_screenshot_gif(base_path)
+        if screenshots:
+            self.create_screenshot_gif(base_path, screenshots)
 
         return json_path
 
