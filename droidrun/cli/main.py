@@ -15,7 +15,6 @@ from droidrun.adb import DeviceManager
 from droidrun.tools import AdbTools, IOSTools
 from functools import wraps
 from droidrun.cli.logs import LogHandler
-from droidrun.telemetry import print_telemetry_message
 from droidrun.portal import (
     download_portal_apk,
     enable_portal_accessibility,
@@ -86,7 +85,6 @@ async def run_command(
     with log_handler.render() as live:
         try:
             logger.info(f"🚀 Starting: {command}")
-            print_telemetry_message()
 
             if not kwargs.get("temperature"):
                 kwargs["temperature"] = 0

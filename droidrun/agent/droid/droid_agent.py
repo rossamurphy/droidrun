@@ -23,7 +23,6 @@ from droidrun.agent.context import ContextInjectionManager
 from droidrun.agent.context.agent_persona import AgentPersona
 from droidrun.agent.context.personas import DEFAULT
 from droidrun.agent.oneflows.reflector import Reflector
-from droidrun.telemetry import capture, flush, DroidAgentInitEvent, DroidAgentFinalizeEvent
 
 
 logger = logging.getLogger("droidrun")
