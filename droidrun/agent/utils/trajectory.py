@@ -47,20 +47,19 @@ class Trajectory:
                 images.append(img)
         
         # Save as GIF
-        gif_path = f"{output_path}.gif"
         images[0].save(
-            gif_path,
+            output_path,
             save_all=True,
             append_images=images[1:],
             duration=duration,
             loop=0
         )
         
-        return gif_path
+        return output_path
 
     def save_trajectory(
         self,
-        directory: str = "trajectories",
+        directory: os.PathLike,
         screenshots: list[bytes] = None
     ) -> str:
         """
@@ -73,10 +72,7 @@ class Trajectory:
             Path to the saved trajectory file
         """
         os.makedirs(directory, exist_ok=True)
-        
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        base_path = os.path.join(directory, f"trajectory_{timestamp}")
-        
+
         def make_serializable(obj):
             """Recursively make objects JSON serializable."""
             if hasattr(obj, "__class__") and obj.__class__.__name__ == "ChatMessage":
@@ -112,12 +108,12 @@ class Trajectory:
             }
             serializable_events.append(event_dict)
         
-        json_path = f"{base_path}.json"
+        json_path = os.path.join(directory,"trajectory.json")
         with open(json_path, "w") as f:
             json.dump(serializable_events, f, indent=2)
 
         if screenshots:
-            self.create_screenshot_gif(base_path, screenshots)
+            self.create_screenshot_gif(os.path.join(directory,"video.gif"), screenshots)
 
         return json_path
 

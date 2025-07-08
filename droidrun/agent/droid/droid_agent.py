@@ -70,7 +70,6 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         enable_tracing: bool = False,
         debug: bool = False,
         save_screenshots: bool = True,
-        save_trajectories: bool = False,
         *args,
         **kwargs
     ):
@@ -114,7 +113,6 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         self.debug = debug
 
         self.event_counter = 0
-        self.save_trajectories = save_trajectories
         self.save_screenshots = save_screenshots
         
         self.trajectory = Trajectory()
@@ -392,10 +390,6 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             "output": ev.output,
             "steps": ev.steps,
         }
-
-        if self.trajectory and self.save_trajectories:
-            if hasattr(self.tools_instance, "screenshots"):
-                self.trajectory.save_trajectory(screenshots=self.tools_instance.screenshots)
 
         return StopEvent(result)
     
