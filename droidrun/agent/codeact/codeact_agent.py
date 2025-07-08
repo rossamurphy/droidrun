@@ -168,6 +168,8 @@ class CodeActAgent(Workflow):
                 logger.warning(
                     "[yellow]DeepSeek doesnt support images. Disabling screenshots[/]"
                 )
+
+
             elif self.vision == True and context == "screenshot":
                 screenshot = (await self.tools.take_screenshot())[1]
                 ctx.write_event_to_stream(ScreenshotEvent(screenshot=screenshot))
@@ -313,6 +315,7 @@ class CodeActAgent(Workflow):
             {
                 "success": ev.success,
                 "reason": ev.reason,
+                "output": ev.reason,
                 "codeact_steps": self.steps_counter,
                 "code_executions": self.code_exec_counter,
             }
@@ -322,7 +325,7 @@ class CodeActAgent(Workflow):
             EpisodicMemoryEvent(episodic_memory=self.episodic_memory)
         )
 
-        return StopEvent(result=result)
+        return StopEvent(result)
 
     async def _get_llm_response(
         self, ctx: Context, chat_history: List[ChatMessage]

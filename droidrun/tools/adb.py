@@ -3,28 +3,26 @@ UI Actions - Core UI interaction tools for Android device control.
 """
 
 import os
-import re
 import json
 import time
-import tempfile
 import asyncio
-import aiofiles
-import contextlib
 import logging
-from typing import Optional, Dict, Tuple, List, Any
+from typing import Optional, Dict, Tuple, List, Any, Type, Self
 from droidrun.adb.device import Device
 from droidrun.adb.manager import DeviceManager
 from droidrun.tools.tools import Tools
 
 logger = logging.getLogger("droidrun-adb-tools")
 
+
 class AdbTools(Tools):
     """Core UI interaction tools for Android device control."""
 
-    def __init__(self, serial: str = "emulator-5554", adb_path: str = "adb") -> None:
+    def __init__(self, serial: str, adb_path: str ="adb") -> None:
         # Instance‐level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
         self.serial = serial
+        self.adb_path = adb_path
         self.device_manager = DeviceManager(adb_path=adb_path)
         self.last_screenshot = None
         self.reason = None
