@@ -142,7 +142,7 @@ async def run_command(
                 reflection=reflection,
                 enable_tracing=tracing,
                 debug=debug,
-                save_trajectories=save_trajectory,
+                save_trajectory=save_trajectory
             )
 
             logger.info("▶️  Starting agent execution...")

@@ -17,7 +17,7 @@ class DroidAgentInitEvent(TelemetryEvent):
     reflection: bool
     enable_tracing: bool
     debug: bool
-    save_trajectories: bool
+    save_trajectory: bool
 
 
 class DroidAgentFinalizeEvent(TelemetryEvent):

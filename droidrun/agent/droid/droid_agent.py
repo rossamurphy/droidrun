@@ -69,7 +69,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         reflection: bool = False,
         enable_tracing: bool = False,
         debug: bool = False,
-        save_screenshots: bool = True,
+        save_trajectory: bool = True,
         *args,
         **kwargs
     ):
@@ -113,7 +113,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         self.debug = debug
 
         self.event_counter = 0
-        self.save_screenshots = save_screenshots
+        self.save_trajectory = save_trajectory
         
         self.trajectory = Trajectory()
         self.task_manager = TaskManager()
@@ -217,7 +217,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
 
             async for nested_ev in handler.stream_events():
                 # take a screenshot before each asking LLM step
-                if self.save_screenshots:
+                if self.save_trajectory:
                     if hasattr(self.tools_instance, "take_screenshot"):
                         if isinstance(nested_ev, TaskInputEvent):
                             # take a screenshot at every juncture where you are asking
