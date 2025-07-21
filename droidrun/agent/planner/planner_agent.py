@@ -1,32 +1,31 @@
+import asyncio
+import logging
+from typing import TYPE_CHECKING, List, Union
+
+from dotenv import load_dotenv
+from llama_index.core.base.llms.types import ChatMessage, ChatResponse
+from llama_index.core.llms.llm import LLM
+from llama_index.core.memory import Memory
+from llama_index.core.prompts import PromptTemplate
+from llama_index.core.workflow import Context, StartEvent, StopEvent, Workflow, step
+
+from droidrun.agent.common.events import ScreenshotEvent
+from droidrun.agent.context.agent_persona import AgentPersona
+from droidrun.agent.context.reflection import Reflection
+from droidrun.agent.context.task_manager import TaskManager
 from droidrun.agent.planner.events import *
+from droidrun.agent.planner.events import (
+    PlanCreatedEvent,
+    PlanInputEvent,
+    PlanThinkingEvent,
+)
 from droidrun.agent.planner.prompts import (
     DEFAULT_PLANNER_SYSTEM_PROMPT,
     DEFAULT_PLANNER_USER_PROMPT,
 )
-import logging
-import asyncio
-from typing import List, TYPE_CHECKING, Union
-import inspect
-from llama_index.core.base.llms.types import ChatMessage, ChatResponse
-from llama_index.core.prompts import PromptTemplate
-from llama_index.core.llms.llm import LLM
-from llama_index.core.workflow import Workflow, StartEvent, StopEvent, Context, step
-from llama_index.core.memory import Memory
-from llama_index.core.llms.llm import LLM
-from droidrun.agent.utils.executer import SimpleCodeExecutor
 from droidrun.agent.utils import chat_utils
-from droidrun.agent.context.task_manager import TaskManager
+from droidrun.agent.utils.executer import SimpleCodeExecutor
 from droidrun.tools import Tools
-from droidrun.agent.common.events import ScreenshotEvent
-from droidrun.agent.planner.events import (
-    PlanInputEvent,
-    PlanCreatedEvent,
-    PlanThinkingEvent,
-)
-from droidrun.agent.context.agent_persona import AgentPersona
-from droidrun.agent.context.reflection import Reflection
-
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -71,9 +70,7 @@ class PlannerAgent(Workflow):
         self.tool_list[self.task_manager.set_tasks_with_agents.__name__] = (
             self.task_manager.set_tasks_with_agents
         )
-        self.tool_list[self.task_manager.complete_goal.__name__] = (
-            self.task_manager.complete_goal
-        )
+        self.tool_list[self.task_manager.complete_goal.__name__] = self.task_manager.complete_goal
 
         self.tools_description = chat_utils.parse_tool_descriptions(self.tool_list)
         self.tools_instance = tools_instance
@@ -85,8 +82,16 @@ class PlannerAgent(Workflow):
             agents=chat_utils.parse_persona_description(self.personas),
         )
         self.user_prompt = user_prompt or DEFAULT_PLANNER_USER_PROMPT.format(goal=goal)
-        self.system_message = ChatMessage(role="system", content=self.system_prompt)
-        self.user_message = ChatMessage(role="user", content=self.user_prompt)
+        self.system_message = ChatMessage(
+            role="system",
+            content=self.system_prompt,
+            additional_kwargs={"cache_control": {"type": "ephemeral"}},
+        )
+        self.user_message = ChatMessage(
+            role="user",
+            content=self.user_prompt,
+            additional_kwargs={"cache_control": {"type": "ephemeral"}},
+        )
 
         self.executer = SimpleCodeExecutor(
             loop=asyncio.get_event_loop(), globals={}, locals={}, tools=self.tool_list
@@ -96,9 +101,7 @@ class PlannerAgent(Workflow):
     async def prepare_chat(self, ctx: Context, ev: StartEvent) -> PlanInputEvent:
         logger.info("💬 Preparing planning session...")
 
-        self.chat_memory: Memory = await ctx.get(
-            "chat_memory", default=Memory.from_defaults()
-        )
+        self.chat_memory: Memory = await ctx.get("chat_memory", default=Memory.from_defaults())
         await self.chat_memory.aput(self.user_message)
 
         if ev.remembered_info:
@@ -107,20 +110,27 @@ class PlannerAgent(Workflow):
         if ev.reflection:
             self.reflection = ev.reflection
         else:
-            self.reflection = None 
-        
-        assert len(self.chat_memory.get_all()) > 0 or self.user_prompt, "Memory input, user prompt or user input cannot be empty."
-        
-        await self.chat_memory.aput(ChatMessage(role="user", content=PromptTemplate(self.user_prompt or DEFAULT_PLANNER_USER_PROMPT.format(goal=self.goal))))
-        
+            self.reflection = None
+
+        assert len(self.chat_memory.get_all()) > 0 or self.user_prompt, (
+            "Memory input, user prompt or user input cannot be empty."
+        )
+
+        await self.chat_memory.aput(
+            ChatMessage(
+                role="user",
+                content=PromptTemplate(
+                    self.user_prompt or DEFAULT_PLANNER_USER_PROMPT.format(goal=self.goal)
+                ),
+            )
+        )
+
         input_messages = self.chat_memory.get_all()
         logger.debug(f"  - Memory contains {len(input_messages)} messages")
         return PlanInputEvent(input=input_messages)
 
     @step
-    async def handle_llm_input(
-        self, ev: PlanInputEvent, ctx: Context
-    ) -> PlanThinkingEvent:
+    async def handle_llm_input(self, ev: PlanInputEvent, ctx: Context) -> PlanThinkingEvent:
         """Handle LLM input."""
         chat_history = ev.input
         assert len(chat_history) > 0, "Chat history cannot be empty."
@@ -128,7 +138,7 @@ class PlannerAgent(Workflow):
         ctx.write_event_to_stream(ev)
 
         self.steps_counter += 1
-        logger.info(f"🧠 Thinking about how to plan the goal...")
+        logger.info("🧠 Thinking about how to plan the goal...")
 
         if self.vision:
             screenshot = (await self.tools_instance.take_screenshot())[1]
@@ -141,8 +151,9 @@ class PlannerAgent(Workflow):
             await ctx.set("phone_state", state["phone_state"])
         except Exception as e:
             logger.warning(f"Exception Raised: {e}")
-            logger.warning(f"⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?")
-
+            logger.warning(
+                "⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
+            )
 
         await ctx.set("remembered_info", self.remembered_info)
         await ctx.set("reflection", self.reflection)
@@ -168,13 +179,11 @@ class PlannerAgent(Workflow):
         if code:
             try:
                 result = await self.executer.execute(ctx, code)
-                logger.info(f"📝 Planning complete")
+                logger.info("📝 Planning complete")
                 logger.debug(f"  - Planning code executed. Result: {result}")
 
                 await self.chat_memory.aput(
-                    ChatMessage(
-                        role="user", content=f"Execution Result:\n```\n{result}\n```"
-                    )
+                    ChatMessage(role="user", content=f"Execution Result:\n```\n{result}\n```")
                 )
 
                 self.remembered_info = self.tools_instance.memory
@@ -243,16 +252,12 @@ wrap your code inside this:
 
             model = self.llm.class_name()
             if model == "DeepSeek":
-                logger.warning(
-                    "[yellow]DeepSeek doesnt support images. Disabling screenshots[/]"
-                )
+                logger.warning("[yellow]DeepSeek doesnt support images. Disabling screenshots[/]")
 
             elif self.vision == True:
                 chat_history = await chat_utils.add_screenshot_image_block(
                     await ctx.get("screenshot"), chat_history
-                )                   
-
-
+                )
 
             chat_history = await chat_utils.add_task_history_block(
                 self.task_manager.get_completed_tasks(),
@@ -268,20 +273,22 @@ wrap your code inside this:
             if reflection:
                 chat_history = await chat_utils.add_reflection_summary(reflection, chat_history)
 
-            chat_history = await chat_utils.add_phone_state_block(await ctx.get("phone_state"), chat_history)
-            chat_history = await chat_utils.add_ui_text_block(await ctx.get("ui_state"), chat_history)
+            chat_history = await chat_utils.add_phone_state_block(
+                await ctx.get("phone_state"), chat_history
+            )
+            chat_history = await chat_utils.add_ui_text_block(
+                await ctx.get("ui_state"), chat_history
+            )
 
             messages_to_send = [self.system_message] + chat_history
-            messages_to_send = [
-                chat_utils.message_copy(msg) for msg in messages_to_send
-            ]
+            messages_to_send = [chat_utils.message_copy(msg) for msg in messages_to_send]
 
             logger.debug(f"  - Final message count: {len(messages_to_send)}")
 
             response = await self.llm.achat(messages=messages_to_send)
-            assert hasattr(
-                response, "message"
-            ), f"LLM response does not have a message attribute.\nResponse: {response}"
+            assert hasattr(response, "message"), (
+                f"LLM response does not have a message attribute.\nResponse: {response}"
+            )
             logger.debug("  - Received response from LLM.")
             return response
         except Exception as e:

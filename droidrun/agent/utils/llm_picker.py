@@ -1,9 +1,33 @@
+import os
+import torch
 import importlib
 import logging
 from typing import Any
+
+# Set before importing transformers
+# Some potentially problematic optimizations you can try and disable if you hit issues
+
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# torch._dynamo.config.suppress_errors = True
+# torch._inductor.config.triton.cudagraphs = False
+
+# getting weird threading issues using the 3090 ... try this to avoid (Gemini recommended it)
+# torch._dynamo.disable()
+
+from transformers import BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
 from llama_index.core.llms.llm import LLM
+
 # Configure logging
 logger = logging.getLogger("droidrun")
+
+# 3090 can do this, so consider setting it
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision('high')
+torch.backends.cudnn.allow_tf32 = True
+
+
+logging.basicConfig(level=logging.INFO)  # Set to INFO to see loading status
+
 
 def load_llm(provider_name: str, **kwargs: Any) -> LLM:
     """
@@ -29,75 +53,92 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
     """
     if not provider_name:
         raise ValueError("provider_name cannot be empty.")
+
+
+
+    if provider_name == "HuggingFaceLLM":
+        logger.info("Handling special case for HuggingFaceLLM provider.")
+        from llama_index.llms.huggingface import HuggingFaceLLM
+
+        model_name = kwargs.get("model_name")
+        if not model_name:
+            raise ValueError("HuggingFaceLLM requires a 'model_name' argument.")
+
+        model_kwargs = {
+            "torch_dtype": kwargs.get("torch_dtype"),
+            "device_map": kwargs.get("device_map", "auto"),
+            "max_memory": kwargs.get("max_memory"),
+        }
+
+        if kwargs.get("load_in_4bit"):
+            logger.info("4-bit quantization enabled.")
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16
+            )
+
+        # Filter out any None values before passing to the function
+        model_kwargs = {k: v for k, v in model_kwargs.items() if v is not None}
+
+        # 2. Load the model from Hugging Face with the specific arguments
+        logger.info(f"Loading model '{model_name}' with args: {model_kwargs.keys()}")
+        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+
+        # 3. Load the tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        # 4. Define terminators
+        terminators = [
+            tokenizer.eos_token_id,
+            tokenizer.convert_tokens_to_ids("<end_of_turn>")
+        ]
+
+        # 5. Initialize the LlamaIndex wrapper, passing the stopping tokens
+        logger.info("Initializing HuggingFaceLLM wrapper with stopping tokens.")
+        llm_instance = HuggingFaceLLM(
+            model=model,
+            tokenizer=tokenizer,
+            stopping_ids=terminators,  # knowing when to stop
+            max_new_tokens=kwargs.get("max_new_tokens", 512)
+        )
+
+        return llm_instance
+
+
     if provider_name == "OpenAILike":
         module_provider_part = "openai_like"
         kwargs.setdefault("is_chat_model", True)
-    elif provider_name == "GoogleGenAI":
+    if provider_name == "GoogleGenAI":
         module_provider_part = "google_genai"
-    else:
-        # Use lowercase for module path, handle hyphens for package name suggestion
-        lower_provider_name = provider_name.lower()
-        # Special case common variations like HuggingFaceLLM -> huggingface module
-        if lower_provider_name.endswith("llm"):
-            module_provider_part = lower_provider_name[:-3].replace("-", "_")
-        else:
-            module_provider_part = lower_provider_name.replace("-", "_")
+
     module_path = f"llama_index.llms.{module_provider_part}"
     install_package_name = f"llama-index-llms-{module_provider_part.replace('_', '-')}"
 
     try:
-        logger.debug(f"Attempting to import module: {module_path}")
         llm_module = importlib.import_module(module_path)
-        logger.debug(f"Successfully imported module: {module_path}")
-
     except ModuleNotFoundError:
         logger.error(f"Module '{module_path}' not found. Try: pip install {install_package_name}")
-        raise ModuleNotFoundError(
-            f"Could not import '{module_path}'. Is '{install_package_name}' installed?"
-        ) from None
+        raise
 
     try:
-        logger.debug(f"Attempting to get class '{provider_name}' from module {module_path}")
         llm_class = getattr(llm_module, provider_name)
-        logger.debug(f"Found class: {llm_class.__name__}")
+        if not issubclass(llm_class, LLM):
+            raise TypeError(f"Class '{provider_name}' is not a valid LLM subclass.")
 
-        # Verify the class is a subclass of LLM
-        if not isinstance(llm_class, type) or not issubclass(llm_class, LLM):
-            raise TypeError(f"Class '{provider_name}' found in '{module_path}' is not a valid LLM subclass.")
-
-        # Filter out None values from kwargs
         filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
-        
-        # Initialize
-        logger.debug(f"Initializing {llm_class.__name__} with kwargs: {list(filtered_kwargs.keys())}")
-        llm_instance = llm_class(**filtered_kwargs)
-        logger.debug(f"Successfully loaded and initialized LLM: {provider_name}")
-        if not llm_instance:
-            raise RuntimeError(f"Failed to initialize LLM instance for {provider_name}.")
-        return llm_instance
 
-    except AttributeError:
-        logger.error(f"Class '{provider_name}' not found in module '{module_path}'.")
-        raise AttributeError(
-            f"Could not find class '{provider_name}' in module '{module_path}'. Check spelling and capitalization."
-        ) from None
-    except TypeError as e:
-        logger.error(f"Error initializing {provider_name}: {e}")
-        raise # Re-raise TypeError (could be from issubclass check or __init__)
+        logger.info(f"Initializing {llm_class.__name__} with args: {list(filtered_kwargs.keys())}")
+        llm_instance = llm_class(**filtered_kwargs)
+        logger.info(f"Successfully loaded and initialized LLM: {provider_name}")
+        return llm_instance
     except Exception as e:
-        logger.error(f"An unexpected error occurred initializing {provider_name}: {e}")
-        raise e
-    
+        logger.error(f"Failed to initialize {provider_name}: {e}")
+        raise
+
+
 # --- Example Usage ---
 if __name__ == "__main__":
-    # Install the specific LLM integrations you want to test:
-    # pip install \
-    #   llama-index-llms-anthropic \
-    #   llama-index-llms-deepseek \
-    #   llama-index-llms-gemini \
-    #   llama-index-llms-openai
-
-    # Example 1: Load Anthropic (requires ANTHROPIC_API_KEY env var or kwarg)
     print("\n--- Loading Anthropic ---")
     try:
         anthropic_llm = load_llm(
@@ -109,7 +150,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Failed to load Anthropic: {e}")
 
-    # Example 2: Load DeepSeek (requires DEEPSEEK_API_KEY env var or kwarg)
     print("\n--- Loading DeepSeek ---")
     try:
         deepseek_llm = load_llm(
@@ -134,15 +174,27 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Failed to load Gemini: {e}")
 
-    # Example 4: Load OpenAI (requires OPENAI_API_KEY env var or kwarg)
-    print("\n--- Loading OpenAI ---")
+    print("\n--- Loading Gemma 3n with HuggingFaceLLM on Linux ---")
     try:
-        openai_llm = load_llm(
-            "OpenAI",
-            model="gp-4o",
-            temperature=0.5,
+        gemma_llm = load_llm(
+            "HuggingFaceLLM",
+            model_name="google/gemma-3n-e4b-it",
+            device_map="cuda:0",
+            load_in_4bit=False,
+            max_new_tokens=512,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2" # trying this out
         )
-        print(f"Loaded LLM: {type(openai_llm)}")
-        print(f"Model: {openai_llm.metadata}")
+        print(f"Successfully loaded LLM: {type(gemma_llm)}")
+
+        # 2. Define your question
+        question = ("who would win in a fight, a bear with a massive sword, or, a cow with a massive gun?")
+        print(f"\nQuestion: {question}")
+
+        # 3. Get the streaming response using the .stream_complete() method
+        print("\nResponse:")
+        response = gemma_llm.complete(question)
+        print(response.text)
+
     except Exception as e:
-        print(f"Failed to load OpenAI: {e}")
+            print(f"\nAn error occurred during setup or query: {e}")
