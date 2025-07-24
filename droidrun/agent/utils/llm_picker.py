@@ -111,7 +111,14 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
         kwargs.setdefault("is_chat_model", True)
     if provider_name == "GoogleGenAI":
         module_provider_part = "google_genai"
-
+    else:
+        # Use lowercase for module path, handle hyphens for package name suggestion
+        lower_provider_name = provider_name.lower()
+        # Special case common variations like HuggingFaceLLM -> huggingface module
+        if lower_provider_name.endswith("llm"):
+            module_provider_part = lower_provider_name[:-3].replace("-", "_")
+        else:
+            module_provider_part = lower_provider_name.replace("-", "_")
     module_path = f"llama_index.llms.{module_provider_part}"
     install_package_name = f"llama-index-llms-{module_provider_part.replace('_', '-')}"
 

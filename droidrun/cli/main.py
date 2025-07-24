@@ -70,6 +70,7 @@ async def run_command(
     reasoning: bool,
     reflection: bool,
     tracing: bool,
+    tracing_url: str,
     debug: bool,
     save_trajectory: bool = False,
     adb_path: str = "adb",
@@ -139,6 +140,7 @@ async def run_command(
                 reasoning=reasoning,
                 reflection=reflection,
                 enable_tracing=tracing,
+                tracing_url=tracing_url,
                 debug=debug,
                 save_trajectory=save_trajectory
             )
@@ -536,6 +538,7 @@ if __name__ == "__main__":
     vision = True
     reasoning = True
     reflection = False
+    tracing_url = "http://localhost:6006/v1/traces"
     tracing = True
     debug = True
     base_url = None
@@ -552,6 +555,7 @@ if __name__ == "__main__":
         reasoning=reasoning,
         reflection=reflection,
         tracing=tracing,
+        tracing_url=tracing_url,
         debug=debug,
         base_url=base_url,
         api_base=api_base,

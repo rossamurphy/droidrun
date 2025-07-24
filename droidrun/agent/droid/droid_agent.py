@@ -67,6 +67,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         reasoning: bool = False,
         reflection: bool = False,
         enable_tracing: bool = False,
+        tracing_url: str = "http://localhost:6006/v1/traces",
         debug: bool = False,
         save_trajectory: bool = True,
         *args,
@@ -95,7 +96,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
         if enable_tracing:
             try:
                 from llama_index.core import set_global_handler
-                set_global_handler("arize_phoenix", endpoint="http://phoenix:6006/v1/traces")
+                set_global_handler("arize_phoenix", endpoint=tracing_url)
                 logger.info("🔍 Arize Phoenix tracing enabled globally")
             except ImportError:
                 logger.warning("⚠️ Arize Phoenix package not found, tracing disabled")

@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from typing import List, Optional, Tuple
+import inspect
 
 from llama_index.core.base.llms.types import ChatMessage, ImageBlock, TextBlock
 
