@@ -21,11 +21,11 @@ logger = logging.getLogger("droidrun-adb-tools")
 class AdbTools(Tools):
     """Core UI interaction tools for Android device control."""
 
-    def __init__(self, serial: str = "emulator-5554") -> None:
+    def __init__(self, serial: str = "emulator-5554", adb_path: str = "abd") -> None:
         # Instance‐level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
         self.serial = serial
-        self.device_manager = DeviceManager()
+        self.device_manager = DeviceManager(adb_path=adb_path)
         self.last_screenshot = None
         self.reason = None
         self.success = None
