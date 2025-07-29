@@ -220,14 +220,16 @@ class CodeActAgent(Workflow):
         thoughts = ev.thoughts
 
 
+        # removing this hard constraint to output thoughts
+        # if you get code, just execute it!
 
-        if not thoughts:
-            logger.warning(
-                "🤔 LLM provided code without thoughts. Adding reminder prompt."
-            )
-            await self.chat_memory.aput(self.no_thoughts_prompt)
-        else:
-            logger.info(f"🤔 Reasoning: {thoughts}")
+        # if not thoughts:
+        #     logger.warning(
+        #         "🤔 LLM provided code without thoughts. Adding reminder prompt."
+        #     )
+        #     await self.chat_memory.aput(self.no_thoughts_prompt)
+        # else:
+        #     logger.info(f"🤔 Reasoning: {thoughts}")
 
         if code:
             return TaskExecutionEvent(code=code)
