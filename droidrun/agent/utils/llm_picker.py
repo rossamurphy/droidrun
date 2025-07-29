@@ -4,7 +4,6 @@ import importlib
 import logging
 from typing import Any
 
-from tests.test_generation import load_in_4bit
 # Set before importing transformers
 # Some potentially problematic optimizations you can try and disable if you hit issues
 
