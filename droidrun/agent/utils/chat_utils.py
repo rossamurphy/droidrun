@@ -336,3 +336,155 @@ def extract_code_and_thought(response_text: str) -> Tuple[Optional[str], str]:
 
     return extracted_code, thought_text
 
+
+def normalize_conversation(
+    messages: List[ChatMessage],
+    max_tokens: Optional[int] = None
+) -> List[ChatMessage]:
+    """
+    Normalize conversation to ensure proper structure:
+    1. System message first (required)
+    2. Strict user/assistant alternation
+    3. Respect token limits while preserving system message and recent context
+
+    Args:
+        messages: Raw conversation messages
+        max_tokens: Maximum tokens to allow (approximate word count * 1.3)
+
+    Returns:
+        Normalized conversation with system message first, then alternating user/assistant
+    """
+    if not messages:
+        raise ValueError("Messages cannot be empty - system message is required")
+
+    # Separate system messages from conversation messages
+    system_messages = [msg for msg in messages if msg.role == "system"]
+    conversation_messages = [msg for msg in messages if msg.role != "system"]
+
+    if not system_messages:
+        raise ValueError("System message is required but not found")
+
+    # Use the first system message (merge multiple if they exist)
+    if len(system_messages) > 1:
+        merged_system_content = "\n\n".join(msg.content for msg in system_messages)
+        system_message = ChatMessage(role="system", content=merged_system_content)
+    else:
+        system_message = system_messages[0]
+
+    # Normalize conversation alternation
+    normalized_conversation = ensure_alternation(conversation_messages)
+
+    # Handle token limits if specified
+    if max_tokens:
+        normalized_conversation = truncate_conversation(
+            normalized_conversation,
+            max_tokens,
+            system_message
+        )
+
+    # Return: system message first, then normalized conversation
+    return [system_message] + normalized_conversation
+
+
+def ensure_alternation(messages: List[ChatMessage]) -> List[ChatMessage]:
+    """Ensure strict user/assistant alternation by merging consecutive same-role messages."""
+    if not messages:
+        return messages
+
+    normalized = []
+
+    for msg in messages:
+        if not normalized:
+            normalized.append(msg)
+        elif normalized[-1].role == msg.role:
+            # Merge consecutive messages from same role
+            merged_content = f"{normalized[-1].content}\n\n{msg.content}"
+            normalized[-1] = ChatMessage(role=msg.role, content=merged_content)
+        else:
+            normalized.append(msg)
+
+    # Ensure conversation starts with user message
+    if normalized and normalized[0].role != "user":
+        # Insert generic user message at the beginning
+        generic_user = ChatMessage(
+            role="user",
+            content="Please help me with this task."
+        )
+        normalized.insert(0, generic_user)
+
+    # Final pass: ensure perfect alternation
+    final_normalized = []
+    expected_role = "user"
+
+    for msg in normalized:
+        if msg.role == expected_role:
+            final_normalized.append(msg)
+            expected_role = "assistant" if expected_role == "user" else "user"
+        else:
+            # Add minimal bridge message to maintain alternation
+            if expected_role == "user":
+                bridge_msg = ChatMessage(role="user", content="Continue.")
+            else:
+                bridge_msg = ChatMessage(role="assistant", content="Understood.")
+
+            final_normalized.append(bridge_msg)
+            final_normalized.append(msg)
+            expected_role = "assistant" if msg.role == "user" else "user"
+
+    return final_normalized
+
+
+def truncate_conversation(
+    conversation: List[ChatMessage],
+    max_tokens: int,
+    system_message: ChatMessage
+) -> List[ChatMessage]:
+    """
+    Truncate conversation to fit token limit while preserving recent context.
+    Strategy: Keep recent messages and ensure user/assistant alternation is maintained.
+    """
+
+    # Rough token estimation (words * 1.3)
+    def estimate_tokens(text: str) -> int:
+        return int(len(text.split()) * 1.3)
+
+    system_tokens = estimate_tokens(system_message.content)
+    available_tokens = max_tokens - system_tokens
+
+    if available_tokens <= 0:
+        logger.warning("System message exceeds token limit - proceeding anyway")
+        return conversation[:2] if len(conversation) >= 2 else conversation
+
+    # Work backwards from the most recent messages
+    truncated = []
+    current_tokens = 0
+
+    # Always try to keep at least the last user-assistant pair
+    for msg in reversed(conversation):
+        msg_tokens = estimate_tokens(msg.content)
+
+        if current_tokens + msg_tokens <= available_tokens:
+            truncated.insert(0, msg)
+            current_tokens += msg_tokens
+        else:
+            break
+
+    # Ensure we have at least some conversation and proper alternation
+    if not truncated and conversation:
+        # Take the most recent message even if it exceeds limit
+        truncated = [conversation[-1]]
+
+    # Ensure truncated conversation starts with user message for proper alternation
+    if truncated and truncated[0].role != "user":
+        if len(truncated) > 1:
+            # Remove first assistant message to maintain alternation
+            truncated = truncated[1:]
+        else:
+            # Replace with a generic user message
+            truncated = [ChatMessage(role="user", content="Please help with this task.")]
+
+    if len(truncated) != len(conversation):
+        logger.info(
+            f"Truncated conversation from {len(conversation)} to {len(truncated)} messages to fit token limit")
+
+    return truncated

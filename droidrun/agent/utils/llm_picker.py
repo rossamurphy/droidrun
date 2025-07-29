@@ -4,6 +4,7 @@ import importlib
 import logging
 from typing import Any
 
+from tests.test_generation import load_in_4bit
 # Set before importing transformers
 # Some potentially problematic optimizations you can try and disable if you hit issues
 
@@ -60,17 +61,32 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
         logger.info("Handling special case for HuggingFaceLLM provider.")
         from llama_index.llms.huggingface import HuggingFaceLLM
 
-        model_name = kwargs.get("model_name")
+        model_name = kwargs.get("model")
         if not model_name:
-            raise ValueError("HuggingFaceLLM requires a 'model_name' argument.")
+            raise ValueError("HuggingFaceLLM requires a 'model' argument.")
+
+        if torch.cuda.is_available():
+            print("CUDA is available, setting default device map to cuda:0")
+            device_map = "cuda:0"
+        elif torch.backends.mps.is_available():
+            print("MPS is available, setting default device map to mps")
+            device_map = "mps"
+        else:
+            print("No accelerator available, setting default device map to cpu")
+            device_map = "cpu"
 
         model_kwargs = {
             "torch_dtype": kwargs.get("torch_dtype"),
-            "device_map": kwargs.get("device_map", "auto"),
+            "device_map": kwargs.get("device_map", device_map),
             "max_memory": kwargs.get("max_memory"),
         }
 
+        print("Using device map:", model_kwargs["device_map"])
+        print("If this differs from the default device map, it has been overridden by the user.")
+
         if kwargs.get("load_in_4bit"):
+            if device_map == "mps":
+                raise ValueError("4-bit quantization is not supported on MPS devices.")
             logger.info("4-bit quantization enabled.")
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -100,7 +116,7 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
             model=model,
             tokenizer=tokenizer,
             stopping_ids=terminators,  # knowing when to stop
-            max_new_tokens=kwargs.get("max_new_tokens", 512)
+            max_new_tokens=kwargs.get("max_new_tokens", 512),
         )
 
         return llm_instance
@@ -146,6 +162,8 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
 
 # --- Example Usage ---
 if __name__ == "__main__":
+    import dotenv
+    dotenv.load_dotenv("/Users/ross/GitHub/private-android-world/.env")
     print("\n--- Loading Anthropic ---")
     try:
         anthropic_llm = load_llm(
@@ -183,16 +201,40 @@ if __name__ == "__main__":
 
     print("\n--- Loading Gemma 3n with HuggingFaceLLM on Linux ---")
     try:
-        gemma_llm = load_llm(
-            "HuggingFaceLLM",
-            model_name="google/gemma-3n-e4b-it",
-            device_map="cuda:0",
-            load_in_4bit=False,
-            max_new_tokens=512,
-            torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2" # trying this out
-        )
-        print(f"Successfully loaded LLM: {type(gemma_llm)}")
+        if torch.cuda.is_available():
+            gemma_llm = load_llm(
+                "HuggingFaceLLM",
+                model="google/gemma-3n-e4b-it",
+                device_map="cuda:0",
+                # device_map="mps",
+                load_in_4bit=False,
+                max_new_tokens=512,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2" # trying this out
+            )
+            print(f"Successfully loaded LLM: {type(gemma_llm)} on CUDA device.")
+        elif torch.backends.mps.is_available():
+            gemma_llm = load_llm(
+                "HuggingFaceLLM",
+                model="google/gemma-3n-e4b-it",
+                device_map="mps",
+                load_in_4bit=False,
+                max_new_tokens=512,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2" # trying this out
+            )
+            print(f"Successfully loaded LLM: {type(gemma_llm)} on MPS device.")
+        else:
+            gemma_llm = load_llm(
+                "HuggingFaceLLM",
+                model="google/gemma-3n-e4b-it",
+                device_map="cpu",
+                load_in_4bit=True,
+                max_new_tokens=512,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2" # trying this out
+            )
+            print(f"Successfully loaded LLM: {type(gemma_llm)} on CPU device.")
 
         # 2. Define your question
         question = ("who would win in a fight, a bear with a massive sword, or, a cow with a massive gun?")

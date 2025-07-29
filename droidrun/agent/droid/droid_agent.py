@@ -23,9 +23,12 @@ from droidrun.agent.context import ContextInjectionManager
 from droidrun.agent.context.agent_persona import AgentPersona
 from droidrun.agent.context.personas import DEFAULT
 from droidrun.agent.oneflows.reflector import Reflector
+import os
 
 
 logger = logging.getLogger("droidrun")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 class DroidAgent(Workflow):
     """
@@ -239,7 +242,7 @@ A wrapper class that coordinates between PlannerAgent (creates plans) and
             if self.debug:
                 import traceback
                 logger.error(traceback.format_exc())
-            return CodeActResultEvent(success=False, reason=f"Error: {str(e)}", task=task, steps=[])
+            return CodeActResultEvent(success=False, reason=f"Error: {str(e)}", task=task, steps=0)
     
     @step
     async def handle_codeact_execute(self, ctx: Context, ev: CodeActResultEvent) -> FinalizeEvent | ReflectionEvent:

@@ -126,7 +126,7 @@ class CodeActAgent(Workflow):
             ).format(goal=goal),
         )
         self.no_thoughts_prompt = ChatMessage(
-            role="user",
+            role="assistant",
             content=PromptTemplate(DEFAULT_NO_THOUGHTS_PROMPT).format(goal=goal),
         )
 
@@ -196,7 +196,7 @@ class CodeActAgent(Workflow):
                     chat_history,
                 )
 
-        response = await self._get_llm_response(ctx, chat_history)
+        response = await self._get_llm_response(ctx, chat_history, debug=self.debug)
         if response is None:
             return TaskEndEvent(
                 success=False, reason="LLM response is None. This is a critical error."
@@ -219,6 +219,8 @@ class CodeActAgent(Workflow):
         code = ev.code
         thoughts = ev.thoughts
 
+
+
         if not thoughts:
             logger.warning(
                 "🤔 LLM provided code without thoughts. Adding reminder prompt."
@@ -232,7 +234,7 @@ class CodeActAgent(Workflow):
         else:
             message = ChatMessage(
                 role="user",
-                content="No code was provided. If you want to mark task as complete (whether it failed or succeeded), use complete(success:bool, reason:str) function within a code block ```pythn\n```.",
+                content="No code was provided. If you want to mark task as complete (whether it failed or succeeded), use complete(success:bool, reason:str) function within a code block ```python\n```.",
             )
             await self.chat_memory.aput(message)
             return TaskInputEvent(input=self.chat_memory.get_all())
@@ -328,11 +330,33 @@ class CodeActAgent(Workflow):
         return StopEvent(result)
 
     async def _get_llm_response(
-        self, ctx: Context, chat_history: List[ChatMessage]
+        self, ctx: Context, chat_history: List[ChatMessage], debug: bool = False
     ) -> ChatResponse | None:
+
         logger.debug("🔍 Getting LLM response...")
+
         messages_to_send = [self.system_prompt] + chat_history
+
+        messages_to_send = chat_utils.normalize_conversation(
+            messages=messages_to_send,
+            max_tokens=4000
+        )
+
         messages_to_send = [chat_utils.message_copy(msg) for msg in messages_to_send]
+
+        # DEBUG: Print the actual conversation structure (on each turn)
+        if debug:
+            print("=== CONVERSATION DEBUG ===")
+            for i, msg in enumerate(messages_to_send):
+                print(f"{i}: {msg.role} - {msg.content[:400]}...")
+            print("========================")
+
+            # Check for role alternation issues
+            for i in range(1, len(messages_to_send)):
+                if messages_to_send[i].role == messages_to_send[i - 1].role:
+                    print(
+                        f"❌ ROLE ISSUE: Messages {i - 1} and {i} both have role '{messages_to_send[i].role}'")
+
         try:
             response = await self.llm.achat(messages=messages_to_send)
             logger.debug("🔍 Received LLM response.")
