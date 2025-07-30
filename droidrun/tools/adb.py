@@ -2,12 +2,14 @@
 UI Actions - Core UI interaction tools for Android device control.
 """
 
-import os
-import json
-import time
 import asyncio
+import json
 import logging
-from typing import Optional, Dict, Tuple, List, Any, Type, Self
+import math
+import os
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
 from droidrun.adb.device import Device
 from droidrun.adb.manager import DeviceManager
 from droidrun.tools.tools import Tools
@@ -18,7 +20,13 @@ logger = logging.getLogger("droidrun-adb-tools")
 class AdbTools(Tools):
     """Core UI interaction tools for Android device control."""
 
-    def __init__(self, serial: str, adb_path: str ="adb") -> None:
+    def __init__(
+        self,
+        serial: str,
+        host_volume_path: str,
+        container_mount_path: str,
+        adb_path: str = "adb",
+    ) -> None:
         # Instance‐level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
         self.serial = serial
@@ -32,6 +40,11 @@ class AdbTools(Tools):
         self.memory: List[str] = []
         # Store all screenshots with timestamps
         self.screenshots: List[Dict[str, Any]] = []
+
+        self.recording_process: Optional[asyncio.subprocess.Process] = None
+        self.recording_host_path: Optional[str] = None
+        self.host_volume_path = os.path.abspath(host_volume_path)  # Resolve to an absolute path
+        self.container_mount_path = container_mount_path
 
     def get_device_serial(self) -> str:
         """Get the device serial from the instance or environment variable."""
@@ -77,41 +90,41 @@ class AdbTools(Tools):
     def _parse_content_provider_output(self, raw_output: str) -> Optional[Dict[str, Any]]:
         """
         Parse the raw ADB content provider output and extract JSON data.
-        
+
         Args:
             raw_output (str): Raw output from ADB content query command
-            
+
         Returns:
             dict: Parsed JSON data or None if parsing failed
         """
         # The ADB content query output format is: "Row: 0 result={json_data}"
         # We need to extract the JSON part after "result="
-        lines = raw_output.strip().split('\n')
-        
+        lines = raw_output.strip().split("\n")
+
         for line in lines:
             line = line.strip()
-            
+
             # Look for lines that contain "result=" pattern
             if "result=" in line:
                 # Extract everything after "result="
                 result_start = line.find("result=") + 7
                 json_str = line[result_start:]
-                
+
                 try:
                     # Parse the JSON string
                     json_data = json.loads(json_str)
                     return json_data
                 except json.JSONDecodeError:
                     continue
-            
+
             # Fallback: try to parse lines that start with { or [
-            elif line.startswith('{') or line.startswith('['):
+            elif line.startswith("{") or line.startswith("["):
                 try:
                     json_data = json.loads(line)
                     return json_data
                 except json.JSONDecodeError:
                     continue
-        
+
         # If no valid JSON found in individual lines, try the entire output
         try:
             json_data = json.loads(raw_output.strip())
@@ -171,7 +184,9 @@ class AdbTools(Tools):
                 if len(indices) > 20:
                     indices_str += f"... and {len(indices) - 20} more"
 
-                return f"Error: No element found with index {index}. Available indices: {indices_str}"
+                return (
+                    f"Error: No element found with index {index}. Available indices: {indices_str}"
+                )
 
             # Get the bounds of the element
             bounds_str = element.get("bounds")
@@ -214,9 +229,7 @@ class AdbTools(Tools):
             # Add information about children if present
             children = element.get("children", [])
             if children:
-                child_texts = [
-                    child.get("text") for child in children if child.get("text")
-                ]
+                child_texts = [child.get("text") for child in children if child.get("text")]
                 if child_texts:
                     response_parts.append(f"Contains text: {' | '.join(child_texts)}")
 
@@ -373,7 +386,7 @@ class AdbTools(Tools):
                 device = await self.get_device()
 
             await device.press_key(3)
-            return f"Pressed key BACK"
+            return "Pressed key BACK"
         except ValueError as e:
             return f"Error: {str(e)}"
 
@@ -720,7 +733,7 @@ class AdbTools(Tools):
         Returns:
             Dictionary containing both 'a11y_tree' and 'phone_state' data
         """
-        
+
         try:
             if serial:
                 device = await self.device_manager.get_device(serial)
@@ -731,15 +744,15 @@ class AdbTools(Tools):
 
             adb_output = await device._adb.shell(
                 device._serial,
-                'content query --uri content://com.droidrun.portal/state'
+                "content query --uri content://com.droidrun.portal/state",
             )
 
             state_data = self._parse_content_provider_output(adb_output)
-            
+
             if state_data is None:
                 return {
                     "error": "Parse Error",
-                    "message": "Failed to parse state data from ContentProvider response"
+                    "message": "Failed to parse state data from ContentProvider response",
                 }
 
             if isinstance(state_data, dict) and "data" in state_data:
@@ -749,25 +762,25 @@ class AdbTools(Tools):
                 except json.JSONDecodeError:
                     return {
                         "error": "Parse Error",
-                        "message": "Failed to parse JSON data from ContentProvider data field"
+                        "message": "Failed to parse JSON data from ContentProvider data field",
                     }
             else:
                 return {
                     "error": "Format Error",
-                    "message": f"Unexpected state data format: {type(state_data)}"
+                    "message": f"Unexpected state data format: {type(state_data)}",
                 }
 
             # Validate that both a11y_tree and phone_state are present
             if "a11y_tree" not in combined_data:
                 return {
                     "error": "Missing Data",
-                    "message": "a11y_tree not found in combined state data"
+                    "message": "a11y_tree not found in combined state data",
                 }
-            
+
             if "phone_state" not in combined_data:
                 return {
-                    "error": "Missing Data", 
-                    "message": "phone_state not found in combined state data"
+                    "error": "Missing Data",
+                    "message": "phone_state not found in combined state data",
                 }
 
             # Filter out the "type" attribute from all a11y_tree elements
@@ -775,9 +788,7 @@ class AdbTools(Tools):
             filtered_elements = []
             for element in elements:
                 # Create a copy of the element without the "type" attribute
-                filtered_element = {
-                    k: v for k, v in element.items() if k != "type"
-                }
+                filtered_element = {k: v for k, v in element.items() if k != "type"}
 
                 # Also filter children if present
                 if "children" in filtered_element:
@@ -787,19 +798,103 @@ class AdbTools(Tools):
                     ]
 
                 filtered_elements.append(filtered_element)
-            
+
             self.clickable_elements_cache = filtered_elements
-            
+
             return {
                 "a11y_tree": filtered_elements,
-                "phone_state": combined_data["phone_state"]
+                "phone_state": combined_data["phone_state"],
             }
 
         except Exception as e:
-            return {"error": str(e), "message": f"Error getting combined state: {str(e)}"}
+            return {
+                "error": str(e),
+                "message": f"Error getting combined state: {str(e)}",
+            }
+
+    # CHANGED: Updated start_recording method
+    async def start_recording(
+        self,
+        dpath: os.PathLike,
+        output_filename: str = "recording.mp4",
+        bit_rate_mbps: int = 8,
+        max_file_size_mb: int = 200,
+    ) -> str:
+        """
+        Start a screen recording, saving it to the task-specific directory.
+
+        Args:
+            dpath: The directory path on the HOST for the current task's results.
+            output_filename: The name of the video file.
+
+        Returns:
+            A confirmation message or an error string.
+        """
+        if self.recording_process:
+            return "Error: A recording is already in progress."
+
+        # --- Calculate time limit from file size and bit rate ---
+        # (Size in Megabytes * 8 bits_per_byte) / Megabits_per_second = Duration in seconds
+        # This prevents the recording from exceeding the specified file size.
+        max_duration_seconds = math.ceil((max_file_size_mb * 8) / bit_rate_mbps)
+
+        # --- Path Translation Logic (remains the same) ---
+        abs_dpath_host = os.path.abspath(dpath)
+        if not abs_dpath_host.startswith(self.host_volume_path):
+            return (
+                f"Error: The provided path '{dpath}' is not inside the configured host volume "
+                f"path '{self.host_volume_path}'."
+            )
+
+        container_dpath = abs_dpath_host.replace(
+            self.host_volume_path, self.container_mount_path, 1
+        )
+        container_recording_path = os.path.join(container_dpath, output_filename)
+        self.recording_host_path = os.path.join(abs_dpath_host, output_filename)
+
+        # --- Updated scrcpy Command ---
+        serial = self.get_device_serial()
+        cmd = (
+            f"scrcpy --serial {serial} "
+            f"--record '{container_recording_path}' "
+            f"--no-display "
+            f"--bit-rate {bit_rate_mbps}M "  # Set the bit rate
+            f"--time-limit {max_duration_seconds}"  # Set the calculated time limit
+            f"--show-touches"
+        )
+
+        try:
+            self.recording_process = await asyncio.create_subprocess_shell(cmd)
+            logger.info(
+                f"Started recording for device {serial}. "
+                f"Limit: ~{max_file_size_mb}MB / {max_duration_seconds}s. "
+                f"Saving to {self.recording_host_path}"
+            )
+            return f"Recording started, limited to ~{max_file_size_mb}MB."
+        except Exception as e:
+            logger.error(f"Failed to start recording: {e}")
+            return f"Error: Failed to start recording: {e}"
+
+    # CHANGED: Updated stop_recording method to use the host path in its message
+    async def stop_recording(self) -> str:
+        """Stops the current screen recording."""
+        if not self.recording_process:
+            return "Error: No recording is currently in progress."
+        try:
+            self.recording_process.send_signal(signal.SIGINT)
+            await self.recording_process.wait()
+            self.recording_process = None
+            logger.info(f"Stopped recording. Video saved to {self.recording_host_path}")
+            return f"Recording stopped. Video saved to {self.recording_host_path}"
+        except Exception as e:
+            logger.error(f"Failed to stop recording: {e}")
+            return f"Error: Failed to stop recording: {e}"
+
 
 if __name__ == "__main__":
+
     async def main():
         tools = AdbTools()
 
     asyncio.run(main())
+
