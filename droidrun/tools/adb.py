@@ -1,7 +1,8 @@
 """
 UI Actions - Core UI interaction tools for Android device control.
 """
-
+import signal
+import shlex
 import asyncio
 import json
 import logging
@@ -818,7 +819,7 @@ class AdbTools(Tools):
         dpath: os.PathLike,
         output_filename: str = "recording.mp4",
         bit_rate_mbps: int = 8,
-        max_file_size_mb: int = 200,
+        max_file_size_mb: int = 400,
     ) -> str:
         """
         Start a screen recording, saving it to the task-specific directory.
@@ -852,43 +853,77 @@ class AdbTools(Tools):
         container_recording_path = os.path.join(container_dpath, output_filename)
         self.recording_host_path = os.path.join(abs_dpath_host, output_filename)
 
-        # --- Updated scrcpy Command ---
+        try:
+            # Get the directory part of the path and create it, including parents
+            output_dir = os.path.dirname(container_recording_path)
+            os.makedirs(output_dir, exist_ok=True)
+            logger.debug(f"Ensured recording directory exists: {output_dir}")
+        except OSError as e:
+            return f"Error creating directory for recording: {e}"
+
         serial = self.get_device_serial()
+        logger.info(f"Serial: {serial}")
+        logger.info(f"Path: {container_recording_path}")
+        logger.info(f"Bitrate: {bit_rate_mbps}")
+        logger.info(f"Max Duration: {max_duration_seconds}")
         cmd = (
             f"scrcpy --serial {serial} "
             f"--record '{container_recording_path}' "
-            f"--no-display "
-            f"--bit-rate {bit_rate_mbps}M "  # Set the bit rate
-            f"--time-limit {max_duration_seconds}"  # Set the calculated time limit
+            f"--video-bit-rate {bit_rate_mbps}M "  # Set the bit rate
+            f"--no-audio "  # Need this because the docker container version of the emulator doesn't have mic support
+            f"--no-playback "
+            f"--time-limit {max_duration_seconds} "  # Set the calculated time limit
             f"--show-touches"
         )
+        logger.info(f"Attempting to run this command {cmd}")
 
         try:
-            self.recording_process = await asyncio.create_subprocess_shell(cmd)
+            # Use shlex.split to parse the command and exec to run it directly
+            self.recording_process = await asyncio.create_subprocess_exec(
+                *shlex.split(cmd)
+            )
             logger.info(
                 f"Started recording for device {serial}. "
-                f"Limit: ~{max_file_size_mb}MB / {max_duration_seconds}s. "
                 f"Saving to {self.recording_host_path}"
             )
-            return f"Recording started, limited to ~{max_file_size_mb}MB."
+            return "Recording started."
         except Exception as e:
-            logger.error(f"Failed to start recording: {e}")
-            return f"Error: Failed to start recording: {e}"
+            logger.error(f"Failed to start recording process: {e}")
+            return f"Error: Failed to start recording process: {e}"
 
     # CHANGED: Updated stop_recording method to use the host path in its message
     async def stop_recording(self) -> str:
         """Stops the current screen recording."""
         if not self.recording_process:
             return "Error: No recording is currently in progress."
-        try:
-            self.recording_process.send_signal(signal.SIGINT)
-            await self.recording_process.wait()
-            self.recording_process = None
-            logger.info(f"Stopped recording. Video saved to {self.recording_host_path}")
-            return f"Recording stopped. Video saved to {self.recording_host_path}"
-        except Exception as e:
-            logger.error(f"Failed to stop recording: {e}")
-            return f"Error: Failed to stop recording: {e}"
+
+        # Check if the process has already terminated
+        if self.recording_process.returncode is None:
+            # The process is still running, so we need to stop it.
+            try:
+                self.recording_process.send_signal(signal.SIGINT)
+                await self.recording_process.wait()
+                logger.info(
+                    "Gracefully stopped recording process."
+                )
+            except ProcessLookupError:
+                # Handle the rare case where the process terminates right after our check
+                logger.warning(
+                    "Recording process not found, it likely terminated on its own."
+                )
+            except Exception as e:
+                logger.error(f"Failed to stop running recording process: {e}")
+                return f"Error: Failed to stop recording: {e}"
+        else:
+            # The process had already finished.
+            logger.info(
+                f"Recording process already terminated with code: {self.recording_process.returncode}"
+            )
+
+        self.recording_process = None
+        final_message = f"Recording stopped. Video saved to {self.recording_host_path}"
+        logger.info(final_message)
+        return final_message
 
 
 if __name__ == "__main__":
@@ -897,4 +932,3 @@ if __name__ == "__main__":
         tools = AdbTools()
 
     asyncio.run(main())
-

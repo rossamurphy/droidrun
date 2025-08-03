@@ -59,6 +59,7 @@ class IOSTools(Tools):
         self.bundle_identifiers = bundle_identifiers
         logger.info(f"iOS device URL: {url}")
 
+
     async def get_state(
         self, serial: Optional[str] = None
     ) -> List[Dict[str, Any]]:

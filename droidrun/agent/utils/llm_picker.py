@@ -78,6 +78,7 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
             "torch_dtype": kwargs.get("torch_dtype"),
             "device_map": kwargs.get("device_map", device_map),
             "max_memory": kwargs.get("max_memory"),
+            "attn_implementation": kwargs.get("attn_implementation") 
         }
 
         print("Using device map:", model_kwargs["device_map"])
@@ -99,6 +100,10 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
         # 2. Load the model from Hugging Face with the specific arguments
         logger.info(f"Loading model '{model_name}' with args: {model_kwargs.keys()}")
         model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+
+        # 2.5 compile the model?
+        # logger.info("Compiling model for faster inference...")
+        # model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
 
         # 3. Load the tokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -209,7 +214,7 @@ if __name__ == "__main__":
                 load_in_4bit=False,
                 max_new_tokens=512,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2" # trying this out
+                attn_implementation="sdpa" # trying this out
             )
             print(f"Successfully loaded LLM: {type(gemma_llm)} on CUDA device.")
         elif torch.backends.mps.is_available():
@@ -220,7 +225,7 @@ if __name__ == "__main__":
                 load_in_4bit=False,
                 max_new_tokens=512,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2" # trying this out
+                attn_implementation="sdpa" # trying this out
             )
             print(f"Successfully loaded LLM: {type(gemma_llm)} on MPS device.")
         else:
@@ -231,7 +236,7 @@ if __name__ == "__main__":
                 load_in_4bit=True,
                 max_new_tokens=512,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2" # trying this out
+                attn_implementation="sdpa" # trying this out
             )
             print(f"Successfully loaded LLM: {type(gemma_llm)} on CPU device.")
 
