@@ -2,7 +2,17 @@ import os
 import torch
 import importlib
 import logging
-from typing import Any
+from typing import Any, Dict, Tuple
+import hashlib
+import json
+
+# Import unsloth first if we're going to use FineTunedGemma
+# This ensures optimizations are applied before transformers is imported
+if os.environ.get("LLM_PROVIDER") == "FineTunedGemma" or "FineTunedGemma" in str(os.environ.get("LLM_MODEL", "")):
+    try:
+        import unsloth
+    except ImportError:
+        pass  # Will be imported later if needed
 
 # Set before importing transformers
 # Some potentially problematic optimizations you can try and disable if you hit issues
@@ -20,6 +30,9 @@ from llama_index.core.llms.llm import LLM
 # Configure logging
 logger = logging.getLogger("droidrun")
 
+# Global cache for loaded models to prevent reloading
+_MODEL_CACHE: Dict[str, LLM] = {}
+
 # 3090 can do this, so consider setting it
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
@@ -29,9 +42,32 @@ torch.backends.cudnn.allow_tf32 = True
 logging.basicConfig(level=logging.INFO)  # Set to INFO to see loading status
 
 
-def load_llm(provider_name: str, **kwargs: Any) -> LLM:
+def clear_llm_cache():
+    """Clear the global LLM cache to free memory."""
+    global _MODEL_CACHE
+    logger.info(f"Clearing LLM cache ({len(_MODEL_CACHE)} models)")
+    _MODEL_CACHE.clear()
+    
+    # Also try to free GPU memory if using CUDA
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        logger.info("Cleared CUDA cache")
+
+
+def _get_cache_key(provider_name: str, **kwargs: Any) -> str:
+    """Generate a unique cache key for the model configuration."""
+    # Create a stable hash of the configuration
+    config = {
+        "provider": provider_name,
+        **{k: str(v) for k, v in sorted(kwargs.items())}
+    }
+    config_str = json.dumps(config, sort_keys=True)
+    return hashlib.md5(config_str.encode()).hexdigest()
+
+
+def load_llm(provider_name: str, use_cache: bool = True, **kwargs: Any) -> LLM:
     """
-    Dynamically loads and initializes a LlamaIndex LLM.
+    Dynamically loads and initializes a LlamaIndex LLM with caching support.
 
     Imports `llama_index.llms.<provider_name_lower>`, finds the class named
     `provider_name` within that module, verifies it's an LLM subclass,
@@ -39,11 +75,12 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
 
     Args:
         provider_name: The case-sensitive name of the provider and the class
-                       (e.g., "OpenAI", "Ollama", "HuggingFaceLLM").
+                       (e.g., "OpenAI", "Ollama", "HuggingFaceLLM", "FineTunedGemma").
+        use_cache: Whether to use cached models (default: True)
         **kwargs: Keyword arguments for the LLM class constructor.
 
     Returns:
-        An initialized LLM instance.
+        An initialized LLM instance (possibly cached).
 
     Raises:
         ModuleNotFoundError: If the provider's module cannot be found.
@@ -53,9 +90,33 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
     """
     if not provider_name:
         raise ValueError("provider_name cannot be empty.")
+    
+    # Check cache first
+    if use_cache:
+        cache_key = _get_cache_key(provider_name, **kwargs)
+        if cache_key in _MODEL_CACHE:
+            logger.info(f"Using cached LLM instance for {provider_name} (cache key: {cache_key[:8]}...)")
+            return _MODEL_CACHE[cache_key]
+        else:
+            logger.info(f"No cached model found, loading new instance for {provider_name}")
 
 
 
+    # Special case for FineTunedGemma - use our custom provider
+    if provider_name == "FineTunedGemma":
+        logger.info("Loading FineTunedGemma model from local adapters...")
+        from droidrun.agent.llms.finetuned_gemma import FineTunedGemmaLLM
+        
+        llm_instance = FineTunedGemmaLLM(**kwargs)
+        
+        # Cache the instance
+        if use_cache:
+            cache_key = _get_cache_key(provider_name, **kwargs)
+            _MODEL_CACHE[cache_key] = llm_instance
+            logger.info(f"Cached FineTunedGemma instance (cache key: {cache_key[:8]}...)")
+        
+        return llm_instance
+    
     if provider_name == "HuggingFaceLLM":
         logger.info("Handling special case for HuggingFaceLLM provider.")
         from llama_index.llms.huggingface import HuggingFaceLLM
@@ -101,9 +162,15 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
         logger.info(f"Loading model '{model_name}' with args: {model_kwargs.keys()}")
         model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
 
-        # 2.5 compile the model?
-        # logger.info("Compiling model for faster inference...")
-        # model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+        # 2.5 compile the model for faster inference
+        if torch.cuda.is_available():
+            logger.info("Compiling model for faster inference (this may take a minute on first run)...")
+            try:
+                model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+                logger.info("Model compilation successful!")
+            except Exception as e:
+                logger.warning(f"Model compilation failed, falling back to eager mode: {e}")
+                # Model will still work, just without compilation optimizations
 
         # 3. Load the tokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -122,6 +189,12 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
             stopping_ids=terminators,  # knowing when to stop
             max_new_tokens=kwargs.get("max_new_tokens", 512),
         )
+
+        # Cache the model instance
+        if use_cache:
+            cache_key = _get_cache_key(provider_name, **kwargs)
+            _MODEL_CACHE[cache_key] = llm_instance
+            logger.info(f"Cached HuggingFaceLLM instance (cache key: {cache_key[:8]}...)")
 
         return llm_instance
 
@@ -149,7 +222,14 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
         raise
 
     try:
-        llm_class = getattr(llm_module, provider_name)
+        # Try capitalized version first (standard naming)
+        class_name = provider_name.capitalize()
+        try:
+            llm_class = getattr(llm_module, class_name)
+        except AttributeError:
+            # Fallback to original name if capitalized version doesn't exist
+            llm_class = getattr(llm_module, provider_name)
+            
         if not issubclass(llm_class, LLM):
             raise TypeError(f"Class '{provider_name}' is not a valid LLM subclass.")
 
@@ -158,6 +238,13 @@ def load_llm(provider_name: str, **kwargs: Any) -> LLM:
         logger.info(f"Initializing {llm_class.__name__} with args: {list(filtered_kwargs.keys())}")
         llm_instance = llm_class(**filtered_kwargs)
         logger.info(f"Successfully loaded and initialized LLM: {provider_name}")
+        
+        # Cache the model instance
+        if use_cache:
+            cache_key = _get_cache_key(provider_name, **kwargs)
+            _MODEL_CACHE[cache_key] = llm_instance
+            logger.info(f"Cached {provider_name} instance (cache key: {cache_key[:8]}...)")
+        
         return llm_instance
     except Exception as e:
         logger.error(f"Failed to initialize {provider_name}: {e}")
@@ -214,7 +301,7 @@ if __name__ == "__main__":
                 load_in_4bit=False,
                 max_new_tokens=512,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="sdpa" # trying this out
+                attn_implementation="eager"  # Gemma 3n doesn't support SDPA yet
             )
             print(f"Successfully loaded LLM: {type(gemma_llm)} on CUDA device.")
         elif torch.backends.mps.is_available():
@@ -225,7 +312,7 @@ if __name__ == "__main__":
                 load_in_4bit=False,
                 max_new_tokens=512,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="sdpa" # trying this out
+                attn_implementation="eager"  # Gemma 3n doesn't support SDPA yet
             )
             print(f"Successfully loaded LLM: {type(gemma_llm)} on MPS device.")
         else:
@@ -236,7 +323,7 @@ if __name__ == "__main__":
                 load_in_4bit=True,
                 max_new_tokens=512,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="sdpa" # trying this out
+                attn_implementation="eager"  # Gemma 3n doesn't support SDPA yet
             )
             print(f"Successfully loaded LLM: {type(gemma_llm)} on CPU device.")
 

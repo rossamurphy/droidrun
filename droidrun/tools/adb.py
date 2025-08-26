@@ -1,6 +1,7 @@
 """
 UI Actions - Core UI interaction tools for Android device control.
 """
+
 import signal
 import shlex
 import asyncio
@@ -10,6 +11,8 @@ import math
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 from droidrun.adb.device import Device
 from droidrun.adb.manager import DeviceManager
@@ -20,6 +23,22 @@ logger = logging.getLogger("droidrun-adb-tools")
 
 class AdbTools(Tools):
     """Core UI interaction tools for Android device control."""
+    
+    # Class-level lock to prevent concurrent uiautomator calls across all instances
+    _uiautomator_lock = asyncio.Lock()
+    
+    # Global toggle for UI stability checking (set via environment variable or directly)
+    UI_STABILITY_CHECK = os.environ.get('UI_STABILITY_CHECK', 'auto').lower()
+    
+    @classmethod
+    def set_stability_check(cls, mode: str):
+        """Set global UI stability checking mode.
+        
+        Args:
+            mode: 'true'/'1' (always on), 'false'/'0' (always off), or 'auto' (smart mode)
+        """
+        cls.UI_STABILITY_CHECK = str(mode).lower()
+        logger.info(f"🔧 UI stability checking set to: {cls.UI_STABILITY_CHECK}")
 
     def __init__(
         self,
@@ -27,9 +46,13 @@ class AdbTools(Tools):
         host_volume_path: str,
         container_mount_path: str,
         adb_path: str = "adb",
+        ensure_ui_stability: Optional[bool] = None,
     ) -> None:
         # Instance‐level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
+        
+        # Instance-level UI stability setting (overrides global if set)
+        self.ensure_ui_stability = ensure_ui_stability
         self.serial = serial
         self.adb_path = adb_path
         self.device_manager = DeviceManager(adb_path=adb_path)
@@ -41,11 +64,57 @@ class AdbTools(Tools):
         self.memory: List[str] = []
         # Store all screenshots with timestamps
         self.screenshots: List[Dict[str, Any]] = []
+        # Screenshot counter for naming
+        self.screenshot_counter = 0
+        # Directory for saving screenshots
+        self.screenshot_save_dir: Optional[str] = None
 
         self.recording_process: Optional[asyncio.subprocess.Process] = None
         self.recording_host_path: Optional[str] = None
         self.host_volume_path = os.path.abspath(host_volume_path)  # Resolve to an absolute path
         self.container_mount_path = container_mount_path
+
+    def set_screenshot_save_dir(self, directory: str) -> None:
+        """Set the directory where screenshots should be saved.
+
+        Args:
+            directory: Path to directory where screenshots will be saved
+        """
+        self.screenshot_save_dir = directory
+        os.makedirs(directory, exist_ok=True)
+        logger.info(f"Screenshot save directory set to: {directory}")
+    
+    def should_ensure_stability(self, for_screenshot: bool = False) -> bool:
+        """Determine if UI stability checking should be used.
+        
+        Priority order:
+        1. Instance-level setting (if explicitly set)
+        2. Environment variable UI_STABILITY_CHECK
+        3. Default behavior based on context
+        
+        Args:
+            for_screenshot: If True, checking for screenshot annotation context
+            
+        Returns:
+            bool: Whether to ensure UI stability
+        """
+        # If instance has explicit setting, use it
+        if self.ensure_ui_stability is not None:
+            return self.ensure_ui_stability
+        
+        # Check global setting
+        global_setting = self.UI_STABILITY_CHECK
+        
+        if global_setting == 'true' or global_setting == '1':
+            return True
+        elif global_setting == 'false' or global_setting == '0':
+            return False
+        elif global_setting == 'auto':
+            # Auto mode: enable for screenshots (training data), disable otherwise
+            return for_screenshot
+        else:
+            # Default to auto behavior
+            return for_screenshot
 
     def get_device_serial(self) -> str:
         """Get the device serial from the instance or environment variable."""
@@ -236,7 +305,9 @@ class AdbTools(Tools):
 
             response_parts.append(f"Coordinates: ({x}, {y})")
 
-            return " | ".join(response_parts)
+            result = " | ".join(response_parts)
+            print(result)  # Print so SimpleCodeExecutor can capture it
+            return result
         except ValueError as e:
             return f"Error: {str(e)}"
 
@@ -268,7 +339,7 @@ class AdbTools(Tools):
             return False
 
     # Replace the old tap function with the new one
-    async def tap(self, index: int) -> str:
+    async def tap(self, index: int, wait_after: float = 0.3) -> str:
         """
         Tap on a UI element by its index.
 
@@ -277,11 +348,15 @@ class AdbTools(Tools):
 
         Args:
             index: Index of the element to tap
+            wait_after: Time to wait after tap (seconds) for UI to stabilize
 
         Returns:
             Result message
         """
-        return await self.tap_by_index(index)
+        result = await self.tap_by_index(index)
+        if wait_after > 0:
+            await asyncio.sleep(wait_after)
+        return result
 
     async def swipe(
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 300
@@ -367,7 +442,9 @@ class AdbTools(Tools):
             if original_ime and "com.droidrun.portal" not in original_ime:
                 await device._adb.shell(device._serial, f"ime set {original_ime}")
 
-            return f"Text input completed: {text[:50]}{'...' if len(text) > 50 else ''}"
+            result = f"Text input completed: {text[:50]}{'...' if len(text) > 50 else ''}"
+            print(result)  # Print so SimpleCodeExecutor can capture it
+            return result
         except ValueError as e:
             return f"Error: {str(e)}"
         except Exception as e:
@@ -387,7 +464,9 @@ class AdbTools(Tools):
                 device = await self.get_device()
 
             await device.press_key(3)
-            return "Pressed key BACK"
+            result = "Pressed key BACK"
+            print(result)  # Print so SimpleCodeExecutor can capture it
+            return result
         except ValueError as e:
             return f"Error: {str(e)}"
 
@@ -421,7 +500,9 @@ class AdbTools(Tools):
             key_name = key_names.get(keycode, str(keycode))
 
             await device.press_key(keycode)
-            return f"Pressed key {key_name}"
+            result = f"Pressed key {key_name}"
+            print(result)  # Print so SimpleCodeExecutor can capture it
+            return result
         except ValueError as e:
             return f"Error: {str(e)}"
 
@@ -442,6 +523,7 @@ class AdbTools(Tools):
                 device = await self.get_device()
 
             result = await device.start_app(package, activity)
+            print(result)  # Print so SimpleCodeExecutor can capture it
             return result
         except ValueError as e:
             return f"Error: {str(e)}"
@@ -486,20 +568,216 @@ class AdbTools(Tools):
                     raise ValueError(f"Device {self.serial} not found")
             else:
                 device = await self.get_device()
-            screen_tuple = await device.take_screenshot()
+            # Use high quality (95) for vision models to preserve detail
+            screen_tuple = await device.take_screenshot(quality=95)
             self.last_screenshot = screen_tuple[1]
 
             # Store screenshot with timestamp
+            timestamp = time.time()
             self.screenshots.append(
                 {
-                    "timestamp": time.time(),
+                    "timestamp": timestamp,
                     "image_data": screen_tuple[1],
                     "format": screen_tuple[0],  # Usually 'PNG'
                 }
             )
+
             return screen_tuple
         except ValueError as e:
             raise ValueError(f"Error taking screenshot: {str(e)}")
+
+    def create_annotated_screenshot(
+        self, screenshot_bytes: bytes, clickable_elements: List[Dict[str, Any]]
+    ) -> bytes:
+        """
+        Create a screenshot with numbered bounding boxes overlaid on clickable elements.
+
+        Args:
+            screenshot_bytes: Raw PNG screenshot bytes
+            clickable_elements: List of clickable elements with bounds and indices
+
+        Returns:
+            bytes: Annotated screenshot as PNG bytes
+        """
+        try:
+            # Open the screenshot image
+            img = Image.open(io.BytesIO(screenshot_bytes))
+            draw = ImageDraw.Draw(img)
+
+            # Try to use a default font, fallback to basic if not available
+            try:
+                font = ImageFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24
+                )
+            except (OSError, IOError):
+                try:
+                    font = ImageFont.load_default()
+                except:
+                    font = None
+
+            def process_elements(elements, draw, font):
+                """Recursively process elements and their children."""
+                for element in elements:
+                    # Skip elements without bounds or index
+                    bounds_str = element.get("bounds")
+                    index = element.get("index")
+
+                    if bounds_str and index is not None:
+                        try:
+                            # Parse bounds: "left,top,right,bottom"
+                            coords = bounds_str.split(",")
+                            if len(coords) == 4:
+                                left, top, right, bottom = map(int, coords)
+
+                                STATUS_BAR_HEIGHT = (
+                                    0  # Test with no offset first to check alignment
+                                )
+                                top += STATUS_BAR_HEIGHT
+                                bottom += STATUS_BAR_HEIGHT
+
+                                # Draw red rectangle for bounding box
+                                colours = ["green", "blue", "red", "purple"]
+                                colour = colours[index % len(colours)]
+                                draw.rectangle(
+                                    [(left, top), (right, bottom)],
+                                    outline=colour,
+                                    width=3,
+                                )
+
+                                # Draw white circle with red border for number background
+                                circle_center_x = left + 30
+                                circle_center_y = top + 30
+                                circle_radius = 30
+
+                                draw.ellipse(
+                                    [
+                                        (
+                                            circle_center_x - circle_radius,
+                                            circle_center_y - circle_radius,
+                                        ),
+                                        (
+                                            circle_center_x + circle_radius,
+                                            circle_center_y + circle_radius,
+                                        ),
+                                    ],
+                                    fill="white",
+                                    outline=colour,
+                                    width=2,
+                                )
+
+                                # Draw the index number
+                                number_text = str(index)
+                                if font:
+                                    # Get text bounding box to center it
+                                    bbox = draw.textbbox((0, 0), number_text, font=font)
+                                    text_width = bbox[2] - bbox[0]
+                                    text_height = bbox[3] - bbox[1]
+
+                                    text_x = circle_center_x - text_width // 2
+                                    text_y = circle_center_y - text_height // 2
+
+                                    draw.text((text_x, text_y), number_text, fill=colour, font=font)
+                                else:
+                                    # Fallback without font
+                                    draw.text(
+                                        (circle_center_x - 5, circle_center_y - 8),
+                                        number_text,
+                                        fill=colour,
+                                    )
+
+                        except (ValueError, IndexError) as e:
+                            logger.debug(
+                                f"Could not parse bounds '{bounds_str}' for element {index}: {e}"
+                            )
+
+                    # Process children recursively
+                    children = element.get("children", [])
+                    if children:
+                        process_elements(children, draw, font)
+
+            # Process all elements
+            process_elements(clickable_elements, draw, font)
+
+            # Convert back to bytes
+            output = io.BytesIO()
+            img.save(output, format="PNG")
+            return output.getvalue()
+
+        except Exception as e:
+            logger.warning(f"Failed to create annotated screenshot: {e}")
+            # Return original screenshot if annotation fails
+            return screenshot_bytes
+
+    async def take_annotated_screenshot(self) -> Tuple[str, bytes]:
+        """
+        Take a screenshot with numbered bounding boxes overlaid on clickable elements.
+
+        Returns:
+            Tuple[str, bytes]: Format and annotated screenshot bytes
+        """
+        logger.info(f"🎯 take_annotated_screenshot CALLED")
+        try:
+            # Take regular screenshot first
+            screenshot_result = await self.take_screenshot()
+            screenshot_bytes = screenshot_result[1]
+
+            logger.info("🔍 Getting fresh UI state for annotation...")
+            # Check if stability checking should be used for screenshots
+            use_stability = self.should_ensure_stability(for_screenshot=True)
+            if use_stability:
+                logger.info("📊 UI stability checking is ENABLED for screenshot")
+            fresh_state = await self.get_state_direct(ensure_stable=use_stability)
+            current_elements = fresh_state.get("a11y_tree", [])
+
+            if not current_elements:
+                logger.error(
+                    f"No clickable elements found! fresh_state keys: {list(fresh_state.keys())}, "
+                    f"fresh_state content: {fresh_state}"
+                )
+                raise Exception("No clickable elements found for annotation")
+
+            # Create annotated version using FRESH elements from current screen
+            # CRITICAL: Use fresh elements, not stale cache
+            elements_snapshot = [
+                element.copy() for element in current_elements if isinstance(element, dict)
+            ]
+            annotated_bytes = self.create_annotated_screenshot(screenshot_bytes, elements_snapshot)
+
+            # CRITICAL: Save the EXACT annotated screenshot that will be sent to the LLM
+            if self.screenshot_save_dir:
+                self.screenshot_counter += 1
+                from datetime import datetime
+
+                timestamp = time.time()
+                dt = datetime.fromtimestamp(timestamp)
+                # Save as LLM screenshot - this is the EXACT bytes shown to LLM
+                filename = f"{self.screenshot_counter:04d}_{dt.strftime('%Y%m%d_%H%M%S_%f')}_llm_screenshot.png"
+                filepath = os.path.join(self.screenshot_save_dir, filename)
+
+                try:
+                    with open(filepath, "wb") as f:
+                        f.write(annotated_bytes)
+                    logger.info(f"🎯 EXACT LLM screenshot saved to: {filepath}")
+
+                    # ALSO save the elements snapshot used for this screenshot
+                    elements_file = filepath.replace("_llm_screenshot.png", "_elements.json")
+                    with open(elements_file, "w") as f:
+                        json.dump(elements_snapshot, f, indent=2)
+                    logger.info(f"🎯 Elements snapshot saved to: {elements_file}")
+
+                except Exception as e:
+                    logger.error(f"CRITICAL: Failed to save LLM screenshot to {filepath}: {e}")
+            else:
+                logger.error(
+                    f"CRITICAL: No screenshot save directory set - cannot save LLM screenshot!"
+                )
+
+            return (screenshot_result[0], annotated_bytes)
+
+        except Exception as e:
+            logger.error(f"Error taking annotated screenshot: {e}")
+            # No fallback - raise the error instead of taking plain screenshots
+            raise e
 
     async def list_packages(self, include_system_apps: bool = False) -> List[str]:
         """
@@ -743,75 +1021,210 @@ class AdbTools(Tools):
             else:
                 device = await self.get_device()
 
-            adb_output = await device._adb.shell(
-                device._serial,
-                "content query --uri content://com.droidrun.portal/state",
-            )
-
-            state_data = self._parse_content_provider_output(adb_output)
-
-            if state_data is None:
-                return {
-                    "error": "Parse Error",
-                    "message": "Failed to parse state data from ContentProvider response",
-                }
-
-            if isinstance(state_data, dict) and "data" in state_data:
-                data_str = state_data["data"]
-                try:
-                    combined_data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    return {
-                        "error": "Parse Error",
-                        "message": "Failed to parse JSON data from ContentProvider data field",
-                    }
-            else:
-                return {
-                    "error": "Format Error",
-                    "message": f"Unexpected state data format: {type(state_data)}",
-                }
-
-            # Validate that both a11y_tree and phone_state are present
-            if "a11y_tree" not in combined_data:
-                return {
-                    "error": "Missing Data",
-                    "message": "a11y_tree not found in combined state data",
-                }
-
-            if "phone_state" not in combined_data:
-                return {
-                    "error": "Missing Data",
-                    "message": "phone_state not found in combined state data",
-                }
-
-            # Filter out the "type" attribute from all a11y_tree elements
-            elements = combined_data["a11y_tree"]
-            filtered_elements = []
-            for element in elements:
-                # Create a copy of the element without the "type" attribute
-                filtered_element = {k: v for k, v in element.items() if k != "type"}
-
-                # Also filter children if present
-                if "children" in filtered_element:
-                    filtered_element["children"] = [
-                        {k: v for k, v in child.items() if k != "type"}
-                        for child in filtered_element["children"]
-                    ]
-
-                filtered_elements.append(filtered_element)
-
-            self.clickable_elements_cache = filtered_elements
-
-            return {
-                "a11y_tree": filtered_elements,
-                "phone_state": combined_data["phone_state"],
-            }
+            return await self.get_state_direct(serial)
 
         except Exception as e:
             return {
                 "error": str(e),
                 "message": f"Error getting combined state: {str(e)}",
             }
+
+    async def get_state_direct(self, serial: Optional[str] = None, ensure_stable: bool = False) -> Dict[str, Any]:
+        """
+        Get fresh accessibility tree directly from Android uiautomator, bypassing Portal cache.
+
+        Args:
+            serial: Optional device serial number
+            ensure_stable: If True, verify UI is stable by comparing consecutive dumps
+
+        Returns:
+            Dictionary containing fresh 'a11y_tree' data directly from Android
+        """
+        import xml.etree.ElementTree as ET
+
+        try:
+            if serial:
+                device = await self.device_manager.get_device(serial)
+                if not device:
+                    raise ValueError(f"Device {serial} not found")
+            else:
+                device = await self.get_device()
+
+            # Use native uiautomator to get FRESH accessibility tree directly
+            logger.info("🔍 Getting fresh UI state directly from Android uiautomator...")
+            
+            # CRITICAL: Acquire lock to prevent concurrent uiautomator calls
+            async with AdbTools._uiautomator_lock:
+                logger.debug("🔒 Acquired uiautomator lock")
+                
+                # Retry up to 3 times with simple timeout protection
+                for attempt in range(3):
+                    try:
+                        # Run uiautomator dump directly with timeout protection
+                        adb_output = await asyncio.wait_for(
+                            device._adb.shell(
+                                device._serial,
+                                "uiautomator dump /sdcard/ui_tree.xml && cat /sdcard/ui_tree.xml",
+                            ),
+                            timeout=8.0  # 8 second timeout
+                        )
+                        
+                        logger.debug(f"uiautomator raw output length: {len(adb_output) if adb_output else 0}")
+                        
+                        # Proactive cleanup after successful call to prevent resource accumulation
+                        try:
+                            await device._adb.shell(device._serial, "rm -f /sdcard/ui_tree.xml")
+                            await asyncio.sleep(0.1)  # Brief pause to let cleanup complete
+                        except:
+                            pass  # Ignore cleanup errors
+                        
+                        break  # Success, exit retry loop
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.warning(f"uiautomator attempt {attempt + 1}/3 failed: {e}")
+                        if attempt < 2:  # Not the last attempt
+                            # Keep-alive: restart uiautomator service to clear stuck processes
+                            try:
+                                logger.info("🔄 Restarting uiautomator service as keep-alive...")
+                                await device._adb.shell(device._serial, "killall uiautomator")
+                                await asyncio.sleep(0.5)
+                            except:
+                                pass  # Ignore restart errors
+                        else:  # Last attempt failed
+                            return {
+                                "error": "UIAutomator Failed",
+                                "message": f"uiautomator command failed after 3 attempts: {str(e)}",
+                            }
+
+            if not adb_output or "UI hierchary dumped" not in adb_output:
+                return {
+                    "error": "Dump Error",
+                    "message": "Failed to dump UI hierarchy with uiautomator",
+                }
+
+            # Extract XML content (after the dump confirmation message)
+            xml_start = adb_output.find("<?xml")
+            if xml_start == -1:
+                return {
+                    "error": "Parse Error",
+                    "message": "No XML found in uiautomator output",
+                }
+
+            xml_content = adb_output[xml_start:]
+            
+            # If ensure_stable is True, verify UI has stabilized
+            if ensure_stable:
+                logger.info("🔄 Ensuring UI stability before returning state...")
+                await asyncio.sleep(0.5)  # Brief pause
+                
+                # Get a second dump to compare
+                try:
+                    second_dump = await asyncio.wait_for(
+                        device._adb.shell(
+                            device._serial,
+                            "uiautomator dump /sdcard/ui_tree2.xml && cat /sdcard/ui_tree2.xml",
+                        ),
+                        timeout=5.0
+                    )
+                    
+                    # Clean up second dump file
+                    try:
+                        await device._adb.shell(device._serial, "rm -f /sdcard/ui_tree2.xml")
+                    except:
+                        pass
+                    
+                    # Compare the two dumps
+                    if second_dump and "<?xml" in second_dump:
+                        second_xml_start = second_dump.find("<?xml")
+                        second_xml = second_dump[second_xml_start:]
+                        
+                        # If XML content differs significantly, use the newer one
+                        if len(second_xml) != len(xml_content):
+                            logger.info("🔄 UI changed, using newer dump")
+                            xml_content = second_xml
+                        else:
+                            logger.debug("✅ UI appears stable")
+                except:
+                    # If second dump fails, continue with first
+                    logger.warning("Could not verify UI stability, proceeding with initial dump")
+
+            # Parse XML into accessibility elements
+            try:
+                root = ET.fromstring(xml_content)
+                # Reset counter for each parse to start from 0
+                elements = self._parse_ui_elements(root, global_index_counter=[0])
+
+                # Update cache with fresh data - this maintains the mapping
+                self.clickable_elements_cache = elements
+
+                return {
+                    "a11y_tree": elements,
+                    "phone_state": {},  # Placeholder - could add dumpsys calls if needed
+                }
+
+            except ET.ParseError as e:
+                return {
+                    "error": "XML Parse Error",
+                    "message": f"Failed to parse XML: {str(e)}",
+                }
+
+        except Exception as e:
+            return {
+                "error": str(e),
+                "message": f"Error getting direct state: {str(e)}",
+            }
+
+    def _parse_ui_elements(self, node, global_index_counter=[0]) -> List[Dict[str, Any]]:
+        """Parse XML UI hierarchy into accessibility tree format with globally unique indices."""
+        elements = []
+
+        # Convert XML node to accessibility element format
+        bounds_str = node.attrib.get("bounds", "[0,0][0,0]")
+        # Parse bounds format: [x1,y1][x2,y2] -> (x1, y1, x2, y2)
+        import re
+
+        bounds_match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_str)
+        if bounds_match:
+            x1, y1, x2, y2 = map(int, bounds_match.groups())
+            bounds = (x1, y1, x2, y2)
+        else:
+            bounds = (0, 0, 0, 0)
+
+        element = {
+            "class": node.attrib.get("class", ""),
+            "package": node.attrib.get("package", ""),
+            "content-desc": node.attrib.get("content-desc", ""),
+            "text": node.attrib.get("text", ""),
+            "resource-id": node.attrib.get("resource-id", ""),
+            "checkable": node.attrib.get("checkable", "false") == "true",
+            "checked": node.attrib.get("checked", "false") == "true",
+            "clickable": node.attrib.get("clickable", "false") == "true",
+            "enabled": node.attrib.get("enabled", "true") == "true",
+            "focusable": node.attrib.get("focusable", "false") == "true",
+            "focused": node.attrib.get("focused", "false") == "true",
+            "scrollable": node.attrib.get("scrollable", "false") == "true",
+            "long-clickable": node.attrib.get("long-clickable", "false") == "true",
+            "password": node.attrib.get("password", "false") == "true",
+            "selected": node.attrib.get("selected", "false") == "true",
+            "bounds": f"{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}",
+        }
+
+        # Only include elements that meet visibility criteria
+        if (
+            element["enabled"]
+            and bounds[0] < bounds[2]
+            and bounds[1] < bounds[3]  # Valid bounds
+            and (element["clickable"] or element["text"] or element["content-desc"])
+        ):
+            # Assign globally unique index using counter
+            element["index"] = global_index_counter[0]
+            global_index_counter[0] += 1
+            elements.append(element)
+
+        # Process child nodes recursively
+        for child in node:
+            elements.extend(self._parse_ui_elements(child, global_index_counter))
+
+        return elements
 
     # CHANGED: Updated start_recording method
     async def start_recording(
@@ -879,12 +1292,9 @@ class AdbTools(Tools):
 
         try:
             # Use shlex.split to parse the command and exec to run it directly
-            self.recording_process = await asyncio.create_subprocess_exec(
-                *shlex.split(cmd)
-            )
+            self.recording_process = await asyncio.create_subprocess_exec(*shlex.split(cmd))
             logger.info(
-                f"Started recording for device {serial}. "
-                f"Saving to {self.recording_host_path}"
+                f"Started recording for device {serial}. Saving to {self.recording_host_path}"
             )
             return "Recording started."
         except Exception as e:
@@ -903,14 +1313,10 @@ class AdbTools(Tools):
             try:
                 self.recording_process.send_signal(signal.SIGINT)
                 await self.recording_process.wait()
-                logger.info(
-                    "Gracefully stopped recording process."
-                )
+                logger.info("Gracefully stopped recording process.")
             except ProcessLookupError:
                 # Handle the rare case where the process terminates right after our check
-                logger.warning(
-                    "Recording process not found, it likely terminated on its own."
-                )
+                logger.warning("Recording process not found, it likely terminated on its own.")
             except Exception as e:
                 logger.error(f"Failed to stop running recording process: {e}")
                 return f"Error: Failed to stop recording: {e}"

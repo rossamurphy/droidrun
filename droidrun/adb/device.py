@@ -215,11 +215,11 @@ class Device:
         result = await self._adb.shell(self._serial, " ".join(cmd))
         return result.strip()
 
-    async def take_screenshot(self, quality: int = 75) -> Tuple[str, bytes]:
-        """Take a screenshot of the device and compress it.
+    async def take_screenshot(self, quality: int = 95) -> Tuple[str, bytes]:
+        """Take a screenshot of the device without compression.
 
         Args:
-            quality: JPEG quality (1-100, lower means smaller file size)
+            quality: (Deprecated) JPEG quality parameter kept for backward compatibility
 
         Returns:
             Tuple of (local file path, screenshot data as bytes)
@@ -247,50 +247,15 @@ class Device:
             # Clean up on device
             await self._adb.shell(self._serial, f"rm {device_path}")
 
-            # Read the screenshot file
+            # Read the screenshot file and return uncompressed PNG data
             with open(screenshot_path, "rb") as f:
                 screenshot_data = f.read()
 
-            # Convert and compress the image
-            try:
-                from PIL import Image
-                import io
+            import logging
+            logger = logging.getLogger("droidrun")
+            logger.debug(f"Screenshot captured: {len(screenshot_data) / 1024:.1f}KB (uncompressed PNG)")
 
-                # Create buffer for the compressed image
-                buffer = io.BytesIO()
-
-                # Load the PNG data into a PIL Image
-                with Image.open(io.BytesIO(screenshot_data)) as img:
-                    # Convert to RGB (removing alpha channel if present) and save as JPEG
-                    converted_img = img.convert("RGB") if img.mode == "RGBA" else img
-                    converted_img.save(
-                        buffer, format="JPEG", quality=quality, optimize=True
-                    )
-                    compressed_data = buffer.getvalue()
-
-                # Get size reduction info for logging
-                png_size = len(screenshot_data) / 1024
-                jpg_size = len(compressed_data) / 1024
-                reduction = 100 - (jpg_size / png_size * 100) if png_size > 0 else 0
-
-                import logging
-
-                logger = logging.getLogger("droidrun")
-                logger.debug(
-                    f"Screenshot compressed successfully: {png_size:.1f}KB → {jpg_size:.1f}KB ({reduction:.1f}% reduction)"
-                )
-
-                return screenshot_path, compressed_data
-            except ImportError:
-                # If PIL is not available, return the original PNG data
-                logger.warning("PIL not available, returning uncompressed screenshot")
-                return screenshot_path, screenshot_data
-            except Exception as e:
-                # If compression fails, return the original PNG data
-                logger.warning(
-                    f"Screenshot compression failed: {e}, returning uncompressed"
-                )
-                return screenshot_path, screenshot_data
+            return screenshot_path, screenshot_data
 
         except Exception as e:
             # Clean up in case of error

@@ -20,7 +20,8 @@ class Trajectory:
 
     def __init__(self):
         """Initializes an empty trajectory class."""
-        self.events: List[Event] = [] 
+        self.events: List[Event] = []
+        self.screenshots: List[Any] = []  # Store screenshot data 
 
 
     def create_screenshot_gif(self, output_path: str, screenshots: list[dict[str, Any]], duration: int = 1500) -> str:

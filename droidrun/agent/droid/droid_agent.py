@@ -192,6 +192,11 @@ class DroidAgent(Workflow):
         reflection = ev.reflection if ev.reflection is not None else None
         persona = self.cim.get_persona(task.agent_type)
 
+        logger.info(f"🔍 Task agent_type: {task.agent_type}")
+        logger.info(f"🔍 Retrieved persona: {persona.name if persona else 'None'}")
+        if persona:
+            logger.info(f"🔍 Persona required_context: {persona.required_context}")
+
         logger.info(f"🔧 Executing task: {task.description}")
 
         try:
@@ -215,12 +220,13 @@ class DroidAgent(Workflow):
             async for nested_ev in handler.stream_events():
                 # take a screenshot before each asking LLM step
                 if self.save_trajectory:
-                    if hasattr(self.tools_instance, "take_screenshot"):
+                    if hasattr(self.tools_instance, "take_annotated_screenshot"):
                         if isinstance(nested_ev, TaskInputEvent):
-                            # take a screenshot at every juncture where you are asking
-                            # something of an LLM
+                            # take an annotated screenshot at every juncture where you are asking
+                            # something of an LLM (with save_for_llm=False for dashboard use)
                             # (this is to try and stop duplicating screenshots in the history)
-                            await self.tools_instance.take_screenshot()
+                            await self.tools_instance.take_annotated_screenshot()
+                    # Removed fallback - only use annotated screenshots
                 self.handle_stream_event(nested_ev, ctx)
 
             result = await handler

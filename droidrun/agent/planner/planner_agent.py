@@ -141,7 +141,7 @@ class PlannerAgent(Workflow):
         logger.info("🧠 Thinking about how to plan the goal...")
 
         if self.vision:
-            screenshot = (await self.tools_instance.take_screenshot())[1]
+            screenshot = (await self.tools_instance.take_annotated_screenshot())[1]
             ctx.write_event_to_stream(ScreenshotEvent(screenshot=screenshot))
             await ctx.set("screenshot", screenshot)
 
