@@ -23,17 +23,17 @@ logger = logging.getLogger("droidrun-adb-tools")
 
 class AdbTools(Tools):
     """Core UI interaction tools for Android device control."""
-    
+
     # Class-level lock to prevent concurrent uiautomator calls across all instances
     _uiautomator_lock = asyncio.Lock()
-    
+
     # Global toggle for UI stability checking (set via environment variable or directly)
-    UI_STABILITY_CHECK = os.environ.get('UI_STABILITY_CHECK', 'auto').lower()
-    
+    UI_STABILITY_CHECK = os.environ.get("UI_STABILITY_CHECK", "auto").lower()
+
     @classmethod
     def set_stability_check(cls, mode: str):
         """Set global UI stability checking mode.
-        
+
         Args:
             mode: 'true'/'1' (always on), 'false'/'0' (always off), or 'auto' (smart mode)
         """
@@ -50,7 +50,7 @@ class AdbTools(Tools):
     ) -> None:
         # Instance‐level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
-        
+
         # Instance-level UI stability setting (overrides global if set)
         self.ensure_ui_stability = ensure_ui_stability
         self.serial = serial
@@ -83,33 +83,33 @@ class AdbTools(Tools):
         self.screenshot_save_dir = directory
         os.makedirs(directory, exist_ok=True)
         logger.info(f"Screenshot save directory set to: {directory}")
-    
+
     def should_ensure_stability(self, for_screenshot: bool = False) -> bool:
         """Determine if UI stability checking should be used.
-        
+
         Priority order:
         1. Instance-level setting (if explicitly set)
         2. Environment variable UI_STABILITY_CHECK
         3. Default behavior based on context
-        
+
         Args:
             for_screenshot: If True, checking for screenshot annotation context
-            
+
         Returns:
             bool: Whether to ensure UI stability
         """
         # If instance has explicit setting, use it
         if self.ensure_ui_stability is not None:
             return self.ensure_ui_stability
-        
+
         # Check global setting
         global_setting = self.UI_STABILITY_CHECK
-        
-        if global_setting == 'true' or global_setting == '1':
+
+        if global_setting == "true" or global_setting == "1":
             return True
-        elif global_setting == 'false' or global_setting == '0':
+        elif global_setting == "false" or global_setting == "0":
             return False
-        elif global_setting == 'auto':
+        elif global_setting == "auto":
             # Auto mode: enable for screenshots (training data), disable otherwise
             return for_screenshot
         else:
@@ -1029,7 +1029,9 @@ class AdbTools(Tools):
                 "message": f"Error getting combined state: {str(e)}",
             }
 
-    async def get_state_direct(self, serial: Optional[str] = None, ensure_stable: bool = False) -> Dict[str, Any]:
+    async def get_state_direct(
+        self, serial: Optional[str] = None, ensure_stable: bool = False
+    ) -> Dict[str, Any]:
         """
         Get fresh accessibility tree directly from Android uiautomator, bypassing Portal cache.
 
@@ -1052,11 +1054,11 @@ class AdbTools(Tools):
 
             # Use native uiautomator to get FRESH accessibility tree directly
             logger.info("🔍 Getting fresh UI state directly from Android uiautomator...")
-            
+
             # CRITICAL: Acquire lock to prevent concurrent uiautomator calls
             async with AdbTools._uiautomator_lock:
                 logger.debug("🔒 Acquired uiautomator lock")
-                
+
                 # Retry up to 3 times with simple timeout protection
                 for attempt in range(3):
                     try:
@@ -1066,18 +1068,20 @@ class AdbTools(Tools):
                                 device._serial,
                                 "uiautomator dump /sdcard/ui_tree.xml && cat /sdcard/ui_tree.xml",
                             ),
-                            timeout=8.0  # 8 second timeout
+                            timeout=8.0,  # 8 second timeout
                         )
-                        
-                        logger.debug(f"uiautomator raw output length: {len(adb_output) if adb_output else 0}")
-                        
+
+                        logger.debug(
+                            f"uiautomator raw output length: {len(adb_output) if adb_output else 0}"
+                        )
+
                         # Proactive cleanup after successful call to prevent resource accumulation
                         try:
                             await device._adb.shell(device._serial, "rm -f /sdcard/ui_tree.xml")
                             await asyncio.sleep(0.1)  # Brief pause to let cleanup complete
                         except:
                             pass  # Ignore cleanup errors
-                        
+
                         break  # Success, exit retry loop
                     except (asyncio.TimeoutError, Exception) as e:
                         logger.warning(f"uiautomator attempt {attempt + 1}/3 failed: {e}")
@@ -1110,12 +1114,12 @@ class AdbTools(Tools):
                 }
 
             xml_content = adb_output[xml_start:]
-            
+
             # If ensure_stable is True, verify UI has stabilized
             if ensure_stable:
                 logger.info("🔄 Ensuring UI stability before returning state...")
                 await asyncio.sleep(0.5)  # Brief pause
-                
+
                 # Get a second dump to compare
                 try:
                     second_dump = await asyncio.wait_for(
@@ -1123,20 +1127,20 @@ class AdbTools(Tools):
                             device._serial,
                             "uiautomator dump /sdcard/ui_tree2.xml && cat /sdcard/ui_tree2.xml",
                         ),
-                        timeout=5.0
+                        timeout=5.0,
                     )
-                    
+
                     # Clean up second dump file
                     try:
                         await device._adb.shell(device._serial, "rm -f /sdcard/ui_tree2.xml")
                     except:
                         pass
-                    
+
                     # Compare the two dumps
                     if second_dump and "<?xml" in second_dump:
                         second_xml_start = second_dump.find("<?xml")
                         second_xml = second_dump[second_xml_start:]
-                        
+
                         # If XML content differs significantly, use the newer one
                         if len(second_xml) != len(xml_content):
                             logger.info("🔄 UI changed, using newer dump")
