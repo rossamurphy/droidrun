@@ -102,25 +102,79 @@ def _format_ui_elements(ui_data, level=0) -> str:
     return "\n".join(formatted_lines)
 
 
+def _format_ui_elements_as_text(elements) -> str:
+    """Convert UI elements to clean text representation with essential info preserved."""
+    if not elements:
+        return "No UI elements detected"
+
+    # Handle both list and dict formats
+    if isinstance(elements, dict):
+        elements = elements.get('elements', [elements])
+    elif isinstance(elements, str):
+        try:
+            parsed = json.loads(elements)
+            if isinstance(parsed, dict):
+                elements = parsed.get('elements', [parsed])
+            else:
+                elements = parsed
+        except (json.JSONDecodeError, TypeError):
+            return "UI Elements:\n  (Unable to parse UI state)"
+
+    if not isinstance(elements, list):
+        elements = [elements]
+
+    ui_text = "UI Elements:\n"
+    for elem in elements:
+        if not isinstance(elem, dict):
+            continue
+            
+        idx = elem.get("index", "?")
+        text = elem.get("text", "")
+        desc = elem.get("content-desc", "")
+        
+        # Get both class and className fields (different data sources use different names)
+        cls = elem.get("class", elem.get("className", ""))
+        cls_short = cls.split(".")[-1] if cls else ""
+        
+        # Handle both resource-id and resourceId field names
+        resource_id = elem.get("resource-id", elem.get("resourceId", ""))
+        bounds = elem.get("bounds", "")
+        clickable = elem.get("clickable", False)
+
+        # Build comprehensive label with essential identifying information
+        label_parts = []
+        if text:
+            label_parts.append(f'"{text}"')
+        elif desc:
+            label_parts.append(f'"{desc}"')
+        else:
+            label_parts.append(f"[{cls_short}]" if cls_short else "[Element]")
+            
+        # Add resource ID for better identification (crucial for buttons)
+        if resource_id:
+            label_parts.append(f"id:{resource_id}")
+            
+        # Add class info for context
+        if cls_short and not resource_id:  # Only show class if no resource_id
+            label_parts.append(f"class:{cls_short}")
+
+        label = " ".join(label_parts)
+        
+        if clickable:
+            ui_text += f"  [{idx}] {label} (clickable) at {bounds}\n"
+        else:
+            ui_text += f"  [{idx}] {label} at {bounds}\n"
+
+    return ui_text
+
 async def add_ui_text_block(
     ui_state: str, chat_history: List[ChatMessage], copy=True
 ) -> List[ChatMessage]:
-    """Add UI elements to the chat history without modifying the original."""
+    """Add UI elements to the chat history using clean dashboard-style formatting."""
     if ui_state:
-        # Parse the JSON and format it in natural language
-        try:
-            ui_data = json.loads(ui_state) if isinstance(ui_state, str) else ui_state
-            formatted_ui = _format_ui_elements(ui_data)
-            ui_block = TextBlock(
-                text=f"\nCurrent Clickable UI elements from the device in the schema 'index. className: resourceId, text - bounds(x1,y1,x2,y2)':\n{formatted_ui}\n"
-            )
-        except (json.JSONDecodeError, TypeError):
-            # Fallback to original format if parsing fails
-            ui_block = TextBlock(
-                text="\nCurrent Clickable UI elements from the device using the custom TopViewService:\n```json\n"
-                + json.dumps(ui_state)
-                + "\n```\n"
-            )
+        # Use the clean dashboard-style formatting
+        formatted_ui = _format_ui_elements_as_text(ui_state)
+        ui_block = TextBlock(text=f"\n{formatted_ui}\n")
 
         if copy:
             chat_history = chat_history.copy()
