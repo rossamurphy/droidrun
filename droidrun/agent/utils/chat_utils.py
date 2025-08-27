@@ -102,78 +102,15 @@ def _format_ui_elements(ui_data, level=0) -> str:
     return "\n".join(formatted_lines)
 
 
-def _format_ui_elements_as_text(elements) -> str:
-    """Convert UI elements to clean text representation with essential info preserved."""
-    if not elements:
-        return "No UI elements detected"
-
-    # Handle both list and dict formats
-    if isinstance(elements, dict):
-        elements = elements.get('elements', [elements])
-    elif isinstance(elements, str):
-        try:
-            parsed = json.loads(elements)
-            if isinstance(parsed, dict):
-                elements = parsed.get('elements', [parsed])
-            else:
-                elements = parsed
-        except (json.JSONDecodeError, TypeError):
-            return "UI Elements:\n  (Unable to parse UI state)"
-
-    if not isinstance(elements, list):
-        elements = [elements]
-
-    ui_text = "UI Elements:\n"
-    for elem in elements:
-        if not isinstance(elem, dict):
-            continue
-            
-        idx = elem.get("index", "?")
-        text = elem.get("text", "")
-        desc = elem.get("content-desc", "")
-        
-        # Get both class and className fields (different data sources use different names)
-        cls = elem.get("class", elem.get("className", ""))
-        cls_short = cls.split(".")[-1] if cls else ""
-        
-        # Handle both resource-id and resourceId field names
-        resource_id = elem.get("resource-id", elem.get("resourceId", ""))
-        bounds = elem.get("bounds", "")
-        clickable = elem.get("clickable", False)
-
-        # Build comprehensive label with essential identifying information
-        label_parts = []
-        if text:
-            label_parts.append(f'"{text}"')
-        elif desc:
-            label_parts.append(f'"{desc}"')
-        else:
-            label_parts.append(f"[{cls_short}]" if cls_short else "[Element]")
-            
-        # Add resource ID for better identification (crucial for buttons)
-        if resource_id:
-            label_parts.append(f"id:{resource_id}")
-            
-        # Add class info for context
-        if cls_short and not resource_id:  # Only show class if no resource_id
-            label_parts.append(f"class:{cls_short}")
-
-        label = " ".join(label_parts)
-        
-        if clickable:
-            ui_text += f"  [{idx}] {label} (clickable) at {bounds}\n"
-        else:
-            ui_text += f"  [{idx}] {label} at {bounds}\n"
-
-    return ui_text
+from .ui_formatting import format_ui_elements_as_text
 
 async def add_ui_text_block(
     ui_state: str, chat_history: List[ChatMessage], copy=True
 ) -> List[ChatMessage]:
-    """Add UI elements to the chat history using clean dashboard-style formatting."""
+    """Add UI elements to the chat history using unified formatting."""
     if ui_state:
-        # Use the clean dashboard-style formatting
-        formatted_ui = _format_ui_elements_as_text(ui_state)
+        # Use the shared formatting function for consistency with training data
+        formatted_ui = format_ui_elements_as_text(ui_state)
         ui_block = TextBlock(text=f"\n{formatted_ui}\n")
 
         if copy:
@@ -264,6 +201,90 @@ async def add_memory_block(memory: List[str], chat_history: List[ChatMessage]) -
                 chat_history[i] = ChatMessage(role="user", content=content_blocks)
             break
     return chat_history
+
+
+def estimate_chat_tokens(chat_history: List[ChatMessage]) -> int:
+    """
+    Estimate total tokens in chat history using word-based approximation.
+    Rough approximation: 1 token ≈ 0.75 words, so 4/3 words per token
+    """
+    total_words = 0
+    
+    for msg in chat_history:
+        if isinstance(msg.content, str):
+            total_words += len(msg.content.split())
+        elif isinstance(msg.content, list):
+            for block in msg.content:
+                if hasattr(block, 'text') and block.text:
+                    total_words += len(block.text.split())
+    
+    return int(total_words * 4 / 3)
+
+
+def should_force_summarization(chat_history: List[ChatMessage], token_threshold: int = 24000) -> bool:
+    """
+    Check if chat history exceeds token threshold and needs summarization.
+    Default threshold: 24k tokens (18k words)
+    """
+    return estimate_chat_tokens(chat_history) > token_threshold
+
+
+def create_summarization_prompt(chat_history: List[ChatMessage], task_goal: str) -> str:
+    """
+    Create a prompt that forces the agent to summarize conversation history
+    while preserving task-relevant information.
+    """
+    return f"""
+CONTEXT LENGTH MANAGEMENT REQUIRED
+
+Your conversation history has grown too long ({estimate_chat_tokens(chat_history):,} tokens). You must now summarize the important information from your previous actions and observations to continue efficiently.
+
+TASK REMINDER: {task_goal}
+
+Please use the remember() tool to save a concise summary that includes:
+1. What you've accomplished so far toward the task goal
+2. Current state/location in the app/interface  
+3. Any important observations about the UI or app behavior
+4. What still needs to be done to complete the task
+5. Any errors or challenges encountered
+
+Your summary should be 2-3 sentences maximum but capture everything essential for completing the task.
+
+IMPORTANT: You MUST call remember() with your summary before taking any other action.
+"""
+
+
+async def handle_context_length_management(
+    chat_history: List[ChatMessage], 
+    task_goal: str,
+    keep_recent_turns: int = 3
+) -> tuple[List[ChatMessage], bool]:
+    """
+    Handle context length management by forcing summarization when needed.
+    
+    Returns:
+        - Modified chat history 
+        - Boolean indicating if summarization was triggered
+    """
+    if not should_force_summarization(chat_history):
+        return chat_history, False
+    
+    # Create summarization prompt
+    summarization_prompt = create_summarization_prompt(chat_history, task_goal)
+    
+    # Add forced summarization message
+    summarization_msg = ChatMessage(
+        role="system", 
+        content=summarization_prompt
+    )
+    
+    # Keep system message, recent turns, and add summarization prompt
+    system_msgs = [msg for msg in chat_history if msg.role == "system"]
+    recent_msgs = chat_history[-keep_recent_turns:] if len(chat_history) > keep_recent_turns else chat_history
+    
+    new_history = system_msgs + recent_msgs + [summarization_msg]
+    
+    return new_history, True
 
 
 async def get_reflection_block(reflections: List[Reflection]) -> ChatMessage:

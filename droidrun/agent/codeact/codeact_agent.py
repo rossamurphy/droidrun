@@ -316,6 +316,47 @@ class CodeActAgent(Workflow):
                     chat_history,
                 )
 
+        # Handle context length management - force summarization if needed
+        if hasattr(self, 'current_task') and self.current_task:
+            chat_history, summarization_triggered = await chat_utils.handle_context_length_management(
+                chat_history, self.current_task
+            )
+            
+            if summarization_triggered:
+                logger.info(f"🧠 Context length management: Forced summarization triggered")
+                # First, get LLM response to force summarization
+                summarization_response = await self._get_llm_response(ctx, chat_history, debug=self.debug)
+                if summarization_response is None:
+                    return TaskEndEvent(
+                        success=False, reason="Failed to get summarization response."
+                    )
+                
+                # Check if remember() was called in the response
+                if "remember(" not in summarization_response.content:
+                    logger.warning("Agent didn't call remember() during forced summarization")
+                    # Force a remember call with basic summary
+                    basic_summary = f"Working on: {self.current_task}. Need to continue from current state."
+                    await self.tools.remember(basic_summary)
+                
+                # Get updated memory and rebuild context
+                updated_memory = await self.tools.get_memory()
+                self.remembered_info = updated_memory
+                
+                # Rebuild chat history with just recent context + memory
+                system_msgs = [msg for msg in chat_history if msg.role == "system" and "CONTEXT LENGTH MANAGEMENT" not in msg.content]
+                recent_msgs = chat_history[-2:] if len(chat_history) > 2 else chat_history
+                
+                # Filter out the summarization prompt
+                recent_msgs = [msg for msg in recent_msgs if msg.role != "system" or "CONTEXT LENGTH MANAGEMENT" not in msg.content]
+                
+                chat_history = system_msgs + recent_msgs
+                
+                # Add memory block back
+                if updated_memory:
+                    chat_history = await chat_utils.add_memory_block(updated_memory, chat_history)
+                
+                logger.info(f"🧠 Context compressed: {chat_utils.estimate_chat_tokens(chat_history):,} tokens after summarization")
+
         response = await self._get_llm_response(ctx, chat_history, debug=self.debug)
         if response is None:
             return TaskEndEvent(

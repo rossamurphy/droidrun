@@ -1042,34 +1042,9 @@ class AdbTools(Tools):
                 "message": f"Error getting combined state: {str(e)}",
             }
 
-        async def get_state_direct(
+    async def get_state_direct(
         self, serial: Optional[str] = None, ensure_stable: bool = False
     ) -> Dict[str, Any]:
-        """
-        DISABLED: XML uiautomator method replaced for performance.
-        
-        This method was causing 2-5 second delays and race condition crashes.
-        Now returns a minimal structure to force fallback to better methods.
-        
-        Args:
-            serial: Optional device serial number  
-            ensure_stable: Ignored in this implementation
-            
-        Returns:
-            Minimal dictionary structure indicating XML method is disabled
-        """
-        logger.warning("🚫 XML uiautomator method disabled - use alternative UI access methods")
-        
-        # Return minimal structure that indicates no elements found
-        # This forces the system to use alternative approaches like Jeeves
-        return {
-            "error": "XML uiautomator disabled",
-            "message": "Use Jeeves accessibility service or alternative UI access methods",
-            "a11y_tree": [],
-            "phone_state": {"activity": "unknown"},
-            "disabled_method": "xml_uiautomator",
-            "recommendation": "Enable Jeeves accessibility service for fast UI access"
-        }    ) -> Dict[str, Any]:
         """
         Get fresh accessibility tree directly from Android uiautomator, bypassing Portal cache.
 
