@@ -1,35 +1,34 @@
+import asyncio
+import json
 import logging
 import re
 import time
-import asyncio
-import json
-import os
-from typing import List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Union
+
 from llama_index.core.base.llms.types import ChatMessage, ChatResponse
-from llama_index.core.prompts import PromptTemplate
 from llama_index.core.llms.llm import LLM
-from llama_index.core.workflow import Workflow, StartEvent, StopEvent, Context, step
 from llama_index.core.memory import Memory
+from llama_index.core.prompts import PromptTemplate
+from llama_index.core.workflow import Context, StartEvent, StopEvent, Workflow, step
+
 from droidrun.agent.codeact.events import (
-    TaskInputEvent,
+    EpisodicMemoryEvent,
     TaskEndEvent,
     TaskExecutionEvent,
     TaskExecutionResultEvent,
+    TaskInputEvent,
     TaskThinkingEvent,
-    EpisodicMemoryEvent,
 )
-from droidrun.agent.common.events import ScreenshotEvent
-from droidrun.agent.utils import chat_utils
-from droidrun.agent.utils.executer import SimpleCodeExecutor
 from droidrun.agent.codeact.prompts import (
     DEFAULT_CODE_ACT_USER_PROMPT,
     DEFAULT_NO_THOUGHTS_PROMPT,
 )
-
-from droidrun.agent.context.episodic_memory import EpisodicMemory, EpisodicMemoryStep
-from droidrun.tools import Tools
-from typing import Optional, Dict, Tuple, List, Any, Callable
+from droidrun.agent.common.events import ScreenshotEvent
 from droidrun.agent.context.agent_persona import AgentPersona
+from droidrun.agent.context.episodic_memory import EpisodicMemory, EpisodicMemoryStep
+from droidrun.agent.utils import chat_utils
+from droidrun.agent.utils.executer import SimpleCodeExecutor
+from droidrun.tools import Tools
 
 logger = logging.getLogger("droidrun")
 
@@ -84,12 +83,12 @@ class CodeActAgent(Workflow):
 
         self.tool_descriptions = chat_utils.parse_tool_descriptions(self.tool_list)
         self.persona = persona  # Store persona for later system prompt formatting
-        
+
         # System prompt will be created in prepare_chat once we have the goal
         self.system_prompt = None
 
         self.required_context = persona.required_context
-        
+
         # Track incremental progress summary instead of full history
         self.progress_summary = ""
         self.current_task = None
@@ -120,34 +119,34 @@ class CodeActAgent(Workflow):
             # Update summary based on what we learned
             if "tap" in action_desc.lower():
                 if "error" in result.lower() or "failed" in result.lower():
-                    self.progress_summary += f" → Tap failed, trying different approach"
+                    self.progress_summary += " → Tap failed, trying different approach"
                 else:
-                    self.progress_summary += f" → Tapped UI element"
+                    self.progress_summary += " → Tapped UI element"
             elif "scroll" in action_desc.lower() or "swipe" in action_desc.lower():
-                self.progress_summary += f" → Navigated screen"
+                self.progress_summary += " → Navigated screen"
             elif "type" in action_desc.lower() or "input" in action_desc.lower():
-                self.progress_summary += f" → Entered text"
+                self.progress_summary += " → Entered text"
             elif "launch" in action_desc.lower():
-                self.progress_summary += f" → Opened app"
+                self.progress_summary += " → Opened app"
             elif "get_state" in action_desc.lower():
-                self.progress_summary += f" → Analyzed UI"
+                self.progress_summary += " → Analyzed UI"
             else:
                 # Generic update
                 self.progress_summary += f" → {action_desc}"
-        
+
         # Keep summary concise - truncate if too long
         if len(self.progress_summary) > 200:
             # Keep the task start and recent progress
             parts = self.progress_summary.split(" → ")
             if len(parts) > 3:
                 self.progress_summary = parts[0] + " → ... → " + " → ".join(parts[-2:])
-        
+
     def _get_progress_context(self) -> str:
         """Get current progress summary for context."""
         if not self.progress_summary:
             return ""
         return f"Progress so far: {self.progress_summary}"
-    
+
     def _extract_action_description(self, code: str) -> str:
         """
         Extract a human-readable description from code.
@@ -207,7 +206,7 @@ class CodeActAgent(Workflow):
         logger.debug("  - Adding goal to memory.")
         goal = user_input
         self.current_task = goal  # Store for context in future messages
-        
+
         # Create system prompt with task included to ensure it's never truncated
         if not self.system_prompt:
             self.system_prompt_content = self.persona.system_prompt.format(
@@ -215,7 +214,7 @@ class CodeActAgent(Workflow):
                 current_task=goal  # Add task to system prompt
             )
             self.system_prompt = ChatMessage(role="system", content=self.system_prompt_content)
-        
+
         self.user_message = ChatMessage(
             role="user",
             content=PromptTemplate(self.user_prompt or DEFAULT_CODE_ACT_USER_PROMPT).format(
@@ -273,7 +272,7 @@ class CodeActAgent(Workflow):
                 chat_history = await chat_utils.add_screenshot_image_block(screenshot, chat_history)
 
             if context == "ui_state":
-                logger.info(f"🔍 Processing ui_state context...")
+                logger.info("🔍 Processing ui_state context...")
                 try:
                     state = await self.tools.get_state()
                     a11y_tree = state.get('a11y_tree', '{}')
@@ -287,15 +286,15 @@ class CodeActAgent(Workflow):
                     chat_history = await chat_utils.add_ui_text_block(
                         a11y_tree, chat_history
                     )
-                    logger.info(f"🔍 Added UI text block to chat history")
+                    logger.info("🔍 Added UI text block to chat history")
                     chat_history = await chat_utils.add_phone_state_block(
                         state["phone_state"], chat_history
                     )
-                    logger.info(f"🔍 Added phone state block to chat history")
+                    logger.info("🔍 Added phone state block to chat history")
                 except Exception as e:
                     logger.warning(f"Exception Raised: {e}")
                     logger.warning(
-                        f"⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
+                        "⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
                     )
 
             if context == "ui_cache_only":
@@ -307,7 +306,7 @@ class CodeActAgent(Workflow):
                 except Exception as e:
                     logger.warning(f"Exception Raised: {e}")
                     logger.warning(
-                        f"⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
+                        "⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
                     )
 
             if context == "packages":
@@ -321,40 +320,40 @@ class CodeActAgent(Workflow):
             chat_history, summarization_triggered = await chat_utils.handle_context_length_management(
                 chat_history, self.current_task
             )
-            
+
             if summarization_triggered:
-                logger.info(f"🧠 Context length management: Forced summarization triggered")
+                logger.info("🧠 Context length management: Forced summarization triggered")
                 # First, get LLM response to force summarization
                 summarization_response = await self._get_llm_response(ctx, chat_history, debug=self.debug)
                 if summarization_response is None:
                     return TaskEndEvent(
                         success=False, reason="Failed to get summarization response."
                     )
-                
+
                 # Check if remember() was called in the response
                 if "remember(" not in summarization_response.content:
                     logger.warning("Agent didn't call remember() during forced summarization")
                     # Force a remember call with basic summary
                     basic_summary = f"Working on: {self.current_task}. Need to continue from current state."
                     await self.tools.remember(basic_summary)
-                
+
                 # Get updated memory and rebuild context
                 updated_memory = await self.tools.get_memory()
                 self.remembered_info = updated_memory
-                
+
                 # Rebuild chat history with just recent context + memory
                 system_msgs = [msg for msg in chat_history if msg.role == "system" and "CONTEXT LENGTH MANAGEMENT" not in msg.content]
                 recent_msgs = chat_history[-2:] if len(chat_history) > 2 else chat_history
-                
+
                 # Filter out the summarization prompt
                 recent_msgs = [msg for msg in recent_msgs if msg.role != "system" or "CONTEXT LENGTH MANAGEMENT" not in msg.content]
-                
+
                 chat_history = system_msgs + recent_msgs
-                
+
                 # Add memory block back
                 if updated_memory:
                     chat_history = await chat_utils.add_memory_block(updated_memory, chat_history)
-                
+
                 logger.info(f"🧠 Context compressed: {chat_utils.estimate_chat_tokens(chat_history):,} tokens after summarization")
 
         response = await self._get_llm_response(ctx, chat_history, debug=self.debug)
@@ -415,22 +414,22 @@ class CodeActAgent(Workflow):
         print(f"📝 Code:\n```python\n{code}\n```")
         print("-" * 60)
         print("⏳ Running action...")
-        
-        logger.info(f"⚡ Executing action...")
+
+        logger.info("⚡ Executing action...")
         logger.debug(f"Code to execute:\n```python\n{code}\n```")
 
         try:
             self.code_exec_counter += 1
             result = await self.executor.execute(ctx, code)
-            
+
             # CLEAN ACTION RESULT LOGGING
             result_text = str(result) if result else "No output"
             displayed_result = result_text[:200] + "..." if len(result_text) > 200 else result_text
             print(f"✅ ACTION RESULT: {displayed_result}")
             print("⚡"*60 + "\n")
-            
+
             logger.info(f"💡 Code execution successful. Result: {result}")
-            
+
             # Update incremental progress summary
             action_desc = self._extract_action_description(code)
             self._update_progress_summary(action_desc, str(result) if result else "")
@@ -452,12 +451,12 @@ class CodeActAgent(Workflow):
             error_text = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
             print(f"❌ ACTION FAILED: {error_text}")
             print("⚡"*60 + "\n")
-            
+
             logger.error(f"💥 Action failed: {e}")
             if self.debug:
                 logger.error("Exception details:", exc_info=True)
             error_message = f"Error during execution: {e}"
-            
+
             # Update incremental progress summary with error info
             action_desc = self._extract_action_description(code)
             self._update_progress_summary(action_desc, f"Error: {str(e)}")
@@ -483,31 +482,31 @@ class CodeActAgent(Workflow):
                 if len(output) > 100
                 else f"  - Execution output: {output}"
             )
-        
+
         # Build context-rich user message
         context_parts = []
-        
+
         # Always remind the task
         if self.current_task:
             context_parts.append(f"Task: {self.current_task}")
-        
+
         # Add fast incremental progress summary
         progress_context = self._get_progress_context()
         if progress_context:
             context_parts.append(progress_context)
-        
+
         # Add the current execution result
         context_parts.append(f"Last action result:\n```\n{output}\n```")
-        
+
         # Add guidance
         context_parts.append("What's your next action to complete the task?")
-        
+
         # Combine all parts
         observation_message = ChatMessage(
-            role="user", 
+            role="user",
             content="\n\n".join(context_parts)
         )
-        
+
         await self.chat_memory.aput(observation_message)
 
         return TaskInputEvent(input=self.chat_memory.get_all())
@@ -541,7 +540,7 @@ class CodeActAgent(Workflow):
         # Check if message has image blocks
         has_screenshot = False
         text_content = ""
-        
+
         if hasattr(msg, 'blocks') and msg.blocks:
             from llama_index.core.base.llms.types import ImageBlock
             for block in msg.blocks:
@@ -551,23 +550,23 @@ class CodeActAgent(Workflow):
                     text_content += getattr(block, 'text', str(block)) + " "
         else:
             text_content = str(msg.content) if msg.content else ""
-        
+
         # Clean up and truncate text
         text_content = text_content.strip()
         if len(text_content) > 300:
             text_content = text_content[:300] + "..."
-        
+
         # Add screenshot indicator
         if has_screenshot:
             text_content = f"[📸 SCREENSHOT INCLUDED] {text_content}"
-        
+
         return text_content
 
     async def _get_llm_response(
         self, ctx: Context, chat_history: List[ChatMessage], debug: bool = False
     ) -> ChatResponse | None:
         logger.debug("🔍 Getting LLM response...")
-        
+
         # Check what's actually in the chat history
         logger.info(f"🔍 DEBUG: Chat history has {len(chat_history)} messages")
         for i, msg in enumerate(chat_history):
@@ -593,13 +592,13 @@ class CodeActAgent(Workflow):
             print("\n" + "="*60)
             print(f"🤖 CONVERSATION WITH LLM - STEP {self.steps_counter}")
             print("="*60)
-        
+
         if "FineTuned" not in llm_name:
             for i, msg in enumerate(messages_to_send):
                 role_icon = "🤖" if msg.role == "system" else "👤" if msg.role == "user" else "🤖"
                 formatted_content = self._format_message_for_logging(msg)
                 print(f"{role_icon} {msg.role.upper()}: {formatted_content}")
-            
+
             print("-" * 60)
             print("⏳ Waiting for LLM response...")
 
@@ -613,7 +612,7 @@ class CodeActAgent(Workflow):
 
         try:
             response = await self.llm.achat(messages=messages_to_send)
-            
+
             # CLEAN RESPONSE LOGGING - Show what LLM said back (skip for fine-tuned models)
             if "FineTuned" not in llm_name:
                 response_content = response.message.content if response.message.content else ""
@@ -621,10 +620,10 @@ class CodeActAgent(Workflow):
                     displayed_content = response_content[:500] + "..."
                 else:
                     displayed_content = response_content
-                    
+
                 print(f"🤖 ASSISTANT RESPONSE: {displayed_content}")
                 print("="*60 + "\n")
-            
+
             logger.debug("🔍 Received LLM response.")
 
             filtered_chat_history = []
@@ -669,7 +668,7 @@ class CodeActAgent(Workflow):
                     logger.error(f"Rate limit error. Retrying in {seconds} seconds...")
                     time.sleep(seconds)
                 else:
-                    logger.error(f"Rate limit error. Retrying in 5 seconds...")
+                    logger.error("Rate limit error. Retrying in 5 seconds...")
                     time.sleep(40)
                 logger.debug("🔍 Retrying call to LLM...")
                 response = await self.llm.achat(messages=messages_to_send)

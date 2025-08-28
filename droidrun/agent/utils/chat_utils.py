@@ -1,9 +1,8 @@
 import base64
-import json
+import inspect
 import logging
 import re
 from typing import List, Optional, Tuple
-import inspect
 
 from llama_index.core.base.llms.types import ChatMessage, ImageBlock, TextBlock
 
@@ -103,6 +102,7 @@ def _format_ui_elements(ui_data, level=0) -> str:
 
 
 from .ui_formatting import format_ui_elements_as_text
+
 
 async def add_ui_text_block(
     ui_state: str, chat_history: List[ChatMessage], copy=True
@@ -209,7 +209,7 @@ def estimate_chat_tokens(chat_history: List[ChatMessage]) -> int:
     Rough approximation: 1 token ≈ 0.75 words, so 4/3 words per token
     """
     total_words = 0
-    
+
     for msg in chat_history:
         if isinstance(msg.content, str):
             total_words += len(msg.content.split())
@@ -217,7 +217,7 @@ def estimate_chat_tokens(chat_history: List[ChatMessage]) -> int:
             for block in msg.content:
                 if hasattr(block, 'text') and block.text:
                     total_words += len(block.text.split())
-    
+
     return int(total_words * 4 / 3)
 
 
@@ -255,7 +255,7 @@ IMPORTANT: You MUST call remember() with your summary before taking any other ac
 
 
 async def handle_context_length_management(
-    chat_history: List[ChatMessage], 
+    chat_history: List[ChatMessage],
     task_goal: str,
     keep_recent_turns: int = 3
 ) -> tuple[List[ChatMessage], bool]:
@@ -268,22 +268,22 @@ async def handle_context_length_management(
     """
     if not should_force_summarization(chat_history):
         return chat_history, False
-    
+
     # Create summarization prompt
     summarization_prompt = create_summarization_prompt(chat_history, task_goal)
-    
+
     # Add forced summarization message
     summarization_msg = ChatMessage(
-        role="system", 
+        role="system",
         content=summarization_prompt
     )
-    
+
     # Keep system message, recent turns, and add summarization prompt
     system_msgs = [msg for msg in chat_history if msg.role == "system"]
     recent_msgs = chat_history[-keep_recent_turns:] if len(chat_history) > keep_recent_turns else chat_history
-    
+
     new_history = system_msgs + recent_msgs + [summarization_msg]
-    
+
     return new_history, True
 
 

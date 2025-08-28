@@ -1,7 +1,9 @@
-from ..context.episodic_memory import EpisodicMemory
+from typing import Optional
+
 from llama_index.core.llms import ChatMessage
 from llama_index.core.workflow import Event
-from typing import Optional
+
+from ..context.episodic_memory import EpisodicMemory
 
 
 class TaskInputEvent(Event):

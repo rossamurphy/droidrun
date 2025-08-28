@@ -2,17 +2,22 @@
 UI Actions - Core UI interaction tools for Android device control.
 """
 
-import signal
-import shlex
+import os
+
+print(f"DEBUG: Loading adb.py from: {os.path.abspath(__file__)}")
+
 import asyncio
+import io
 import json
 import logging
 import math
 import os
+import shlex
+import signal
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
 from PIL import Image, ImageDraw, ImageFont
-import io
 
 from droidrun.adb.device import Device
 from droidrun.adb.manager import DeviceManager
@@ -22,6 +27,7 @@ logger = logging.getLogger("droidrun-adb-tools")
 
 
 class AdbTools(Tools):
+    print("THIS IS A TEST TO SEE IF THE DOCKERFILE CHANGES ARE WORKING")
     """Core UI interaction tools for Android device control."""
 
     # Class-level lock to prevent concurrent uiautomator calls across all instances
@@ -202,6 +208,105 @@ class AdbTools(Tools):
         except json.JSONDecodeError:
             return None
 
+    def _collect_all_indices(self, elements):
+        """Recursively collect all indices from elements and their children."""
+        indices = []
+        for item in elements:
+            if item.get("index") is not None:
+                indices.append(item.get("index"))
+            # Check children if present
+            children = item.get("children", [])
+            indices.extend(self._collect_all_indices(children))
+        return indices
+
+    def _find_element_by_index(self, elements, target_index):
+        """Recursively find an element with the given index."""
+        for item in elements:
+            if item.get("index") == target_index:
+                return item
+            # Check children if present
+            children = item.get("children", [])
+            result = self._find_element_by_index(children, target_index)
+            if result:
+                return result
+        return None
+
+    def _process_elements(self, elements, draw, font):
+        """Recursively process elements and their children."""
+        for element in elements:
+            # Skip elements without bounds or index
+            bounds_str = element.get("bounds")
+            index = element.get("index")
+
+            if bounds_str and index is not None:
+                try:
+                    # Parse bounds: "left,top,right,bottom"
+                    coords = bounds_str.split(",")
+                    if len(coords) == 4:
+                        left, top, right, bottom = map(int, coords)
+
+                        STATUS_BAR_HEIGHT = 0  # Test with no offset first to check alignment
+                        top += STATUS_BAR_HEIGHT
+                        bottom += STATUS_BAR_HEIGHT
+
+                        # Draw red rectangle for bounding box
+                        colours = ["green", "blue", "red", "purple"]
+                        colour = colours[index % len(colours)]
+                        draw.rectangle(
+                            [(left, top), (right, bottom)],
+                            outline=colour,
+                            width=3,
+                        )
+
+                        # Draw white circle with red border for number background
+                        circle_center_x = left + 30
+                        circle_center_y = top + 30
+                        circle_radius = 30
+
+                        draw.ellipse(
+                            [
+                                (
+                                    circle_center_x - circle_radius,
+                                    circle_center_y - circle_radius,
+                                ),
+                                (
+                                    circle_center_x + circle_radius,
+                                    circle_center_y + circle_radius,
+                                ),
+                            ],
+                            fill="white",
+                            outline=colour,
+                            width=2,
+                        )
+
+                        # Draw the index number
+                        number_text = str(index)
+                        if font:
+                            # Get text bounding box to center it
+                            bbox = draw.textbbox((0, 0), number_text, font=font)
+                            text_width = bbox[2] - bbox[0]
+                            text_height = bbox[3] - bbox[1]
+
+                            text_x = circle_center_x - text_width // 2
+                            text_y = circle_center_y - text_height // 2
+
+                            draw.text((text_x, text_y), number_text, fill=colour, font=font)
+                        else:
+                            # Fallback without font
+                            draw.text(
+                                (circle_center_x - 5, circle_center_y - 8),
+                                number_text,
+                                fill=colour,
+                            )
+
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Could not parse bounds '{bounds_str}' for element {index}: {e}")
+
+            # Process children recursively
+            children = element.get("children", [])
+            if children:
+                self._process_elements(children, draw, font)
+
     async def tap_by_index(self, index: int, serial: Optional[str] = None) -> str:
         """
         Tap on a UI element by its index.
@@ -216,40 +321,17 @@ class AdbTools(Tools):
             Result message
         """
 
-        def collect_all_indices(elements):
-            """Recursively collect all indices from elements and their children."""
-            indices = []
-            for item in elements:
-                if item.get("index") is not None:
-                    indices.append(item.get("index"))
-                # Check children if present
-                children = item.get("children", [])
-                indices.extend(collect_all_indices(children))
-            return indices
-
-        def find_element_by_index(elements, target_index):
-            """Recursively find an element with the given index."""
-            for item in elements:
-                if item.get("index") == target_index:
-                    return item
-                # Check children if present
-                children = item.get("children", [])
-                result = find_element_by_index(children, target_index)
-                if result:
-                    return result
-            return None
-
         try:
             # Check if we have cached elements
             if not self.clickable_elements_cache:
                 return "Error: No UI elements cached. Call get_state first."
 
             # Find the element with the given index (including in children)
-            element = find_element_by_index(self.clickable_elements_cache, index)
+            element = self._find_element_by_index(self.clickable_elements_cache, index)
 
             if not element:
                 # List available indices to help the user
-                indices = sorted(collect_all_indices(self.clickable_elements_cache))
+                indices = sorted(self._collect_all_indices(self.clickable_elements_cache))
                 indices_str = ", ".join(str(idx) for idx in indices[:20])
                 if len(indices) > 20:
                     indices_str += f"... and {len(indices) - 20} more"
@@ -615,88 +697,8 @@ class AdbTools(Tools):
                 except:
                     font = None
 
-            def process_elements(elements, draw, font):
-                """Recursively process elements and their children."""
-                for element in elements:
-                    # Skip elements without bounds or index
-                    bounds_str = element.get("bounds")
-                    index = element.get("index")
-
-                    if bounds_str and index is not None:
-                        try:
-                            # Parse bounds: "left,top,right,bottom"
-                            coords = bounds_str.split(",")
-                            if len(coords) == 4:
-                                left, top, right, bottom = map(int, coords)
-
-                                STATUS_BAR_HEIGHT = (
-                                    0  # Test with no offset first to check alignment
-                                )
-                                top += STATUS_BAR_HEIGHT
-                                bottom += STATUS_BAR_HEIGHT
-
-                                # Draw red rectangle for bounding box
-                                colours = ["green", "blue", "red", "purple"]
-                                colour = colours[index % len(colours)]
-                                draw.rectangle(
-                                    [(left, top), (right, bottom)],
-                                    outline=colour,
-                                    width=3,
-                                )
-
-                                # Draw white circle with red border for number background
-                                circle_center_x = left + 30
-                                circle_center_y = top + 30
-                                circle_radius = 30
-
-                                draw.ellipse(
-                                    [
-                                        (
-                                            circle_center_x - circle_radius,
-                                            circle_center_y - circle_radius,
-                                        ),
-                                        (
-                                            circle_center_x + circle_radius,
-                                            circle_center_y + circle_radius,
-                                        ),
-                                    ],
-                                    fill="white",
-                                    outline=colour,
-                                    width=2,
-                                )
-
-                                # Draw the index number
-                                number_text = str(index)
-                                if font:
-                                    # Get text bounding box to center it
-                                    bbox = draw.textbbox((0, 0), number_text, font=font)
-                                    text_width = bbox[2] - bbox[0]
-                                    text_height = bbox[3] - bbox[1]
-
-                                    text_x = circle_center_x - text_width // 2
-                                    text_y = circle_center_y - text_height // 2
-
-                                    draw.text((text_x, text_y), number_text, fill=colour, font=font)
-                                else:
-                                    # Fallback without font
-                                    draw.text(
-                                        (circle_center_x - 5, circle_center_y - 8),
-                                        number_text,
-                                        fill=colour,
-                                    )
-
-                        except (ValueError, IndexError) as e:
-                            logger.debug(
-                                f"Could not parse bounds '{bounds_str}' for element {index}: {e}"
-                            )
-
-                    # Process children recursively
-                    children = element.get("children", [])
-                    if children:
-                        process_elements(children, draw, font)
-
             # Process all elements
-            process_elements(clickable_elements, draw, font)
+            self._process_elements(clickable_elements, draw, font)
 
             # Convert back to bytes
             output = io.BytesIO()
@@ -708,6 +710,141 @@ class AdbTools(Tools):
             # Return original screenshot if annotation fails
             return screenshot_bytes
 
+    async def get_state_direct(self, device_serial: Optional[str] = None):
+        """
+        Get UI state directly via ADB broadcast intent to the device.
+        This function sends a broadcast to trigger UI state capture and retrieves
+        the JSON data directly from the device without file I/O.
+
+        Args:
+            ensure_stable: Whether to wait for UI stability before capture
+            serial: Optional device serial number
+
+        Returns:
+            Dictionary containing 'a11y_tree' with UI elements and 'phone_state'
+        """
+        try:
+            if device_serial:
+                device = await self.device_manager.get_device(device_serial)
+                if not device:
+                    raise ValueError(f"Device {device_serial} not found")
+            else:
+                device = await self.get_device()
+
+            if not device:
+                raise RuntimeError("Device was not found")
+
+            # Clear logcat for clean data capture
+            await device._adb.shell(device._serial, "logcat -c")
+
+            # Send broadcast intent to trigger UI state capture
+            await device._adb.shell(
+                device._serial, "am broadcast -a com.droidrun.portal.GET_UI_STATE"
+            )
+
+            # Poll for the JSON response in logcat
+            max_retries = 50
+            ui_data = None
+
+            for _ in range(max_retries):
+                await asyncio.sleep(0.05)  # 50ms polling interval
+
+                # Get logcat data
+                logcat_result = await device._adb.shell(device._serial, "logcat -d")
+
+                if not logcat_result:
+                    continue
+
+                # Look for UI data between markers
+                lines = logcat_result.split("\n")
+                capturing = False
+                json_lines = []
+
+                for line in lines:
+                    if "UI_STATE_JSON_START" in line:
+                        capturing = True
+                        continue
+                    elif "UI_STATE_JSON_END" in line:
+                        capturing = False
+                        break
+                    elif capturing:
+                        # Extract JSON from log line
+                        if line.strip().startswith("{") and line.strip().endswith("}"):
+                            json_lines.append(line.strip())
+
+                if json_lines:
+                    try:
+                        # Combine and parse JSON
+                        full_json = "".join(json_lines)
+                        ui_data = json.loads(full_json)
+                        break
+                    except json.JSONDecodeError:
+                        continue
+
+            if not ui_data:
+                # Fallback: Try ContentProvider approach
+                result = await device._adb.shell(
+                    device._serial, "content query --uri content://com.droidrun.portal/ui_state"
+                )
+
+                if result:
+                    ui_data = self._parse_content_provider_output(result)
+
+            if ui_data:
+                # Convert to standard format and cache
+                elements = []
+                for idx, element in enumerate(ui_data.get("elements", [])):
+                    formatted_element = {
+                        "index": idx,
+                        "class": element.get("class", ""),
+                        "text": element.get("text", ""),
+                        "content_desc": element.get("content_desc", ""),
+                        "resource_id": element.get("resource_id", ""),
+                        "clickable": element.get("clickable", False),
+                        "enabled": element.get("enabled", True),
+                        "bounds": f"{element.get('bounds', {}).get('left', 0)},{
+                            element.get('bounds', {}).get('top', 0)
+                        },{element.get('bounds', {}).get('right', 0)},{
+                            element.get('bounds', {}).get('bottom', 0)
+                        }",
+                    }
+
+                    # Only include interactive or informative elements
+                    if (
+                        formatted_element["clickable"]
+                        or formatted_element["text"]
+                        or formatted_element["content_desc"]
+                    ):
+                        elements.append(formatted_element)
+
+                # Cache the elements
+                self.clickable_elements_cache = elements
+
+                return {
+                    "a11y_tree": elements,
+                    "phone_state": {"activity": ui_data.get("current_activity", "unknown")},
+                    "source": "broadcast_intent",
+                    "method": "direct_memory_access",
+                    "file_io": False,
+                    "element_count": len(elements),
+                    "timestamp": time.time(),
+                }
+            else:
+                return {
+                    "error": "No UI state data received",
+                    "a11y_tree": [],
+                    "phone_state": {"activity": "unknown"},
+                }
+
+        except Exception as e:
+            logger.error(f"Error in get_state_direct: {e}")
+            return {
+                "error": str(e),
+                "message": f"Failed to get UI state via broadcast: {e}",
+                "a11y_tree": [],
+                "phone_state": {"activity": "unknown"},
+            }
+
     async def take_annotated_screenshot(self) -> Tuple[str, bytes]:
         """
         Take a screenshot with numbered bounding boxes overlaid on clickable elements.
@@ -715,7 +852,7 @@ class AdbTools(Tools):
         Returns:
             Tuple[str, bytes]: Format and annotated screenshot bytes
         """
-        logger.info(f"🎯 take_annotated_screenshot CALLED")
+        logger.info("🎯 take_annotated_screenshot CALLED")
         try:
             # Take regular screenshot first
             screenshot_result = await self.take_screenshot()
@@ -726,7 +863,7 @@ class AdbTools(Tools):
             use_stability = self.should_ensure_stability(for_screenshot=True)
             if use_stability:
                 logger.info("📊 UI stability checking is ENABLED for screenshot")
-            fresh_state = await self.get_state_direct(ensure_stable=use_stability)
+            fresh_state = await self.get_state_direct(device_serial=self.de)
             current_elements = fresh_state.get("a11y_tree", [])
 
             if not current_elements:
@@ -740,13 +877,19 @@ class AdbTools(Tools):
                     emergency_state = await self.get_state_direct(ensure_stable=False)
                     emergency_elements = emergency_state.get("a11y_tree", [])
                     if emergency_elements:
-                        logger.info(f"✅ Emergency dump successful: {len(emergency_elements)} elements")
+                        logger.info(
+                            f"✅ Emergency dump successful: {len(emergency_elements)} elements"
+                        )
                         current_elements = emergency_elements
                     else:
-                        logger.error("❌ Emergency dump also failed - returning unannotated screenshot")
+                        logger.error(
+                            "❌ Emergency dump also failed - returning unannotated screenshot"
+                        )
                         return (screenshot_result[0], screenshot_bytes)  # Return plain screenshot
                 except Exception as emergency_error:
-                    logger.error(f"❌ Emergency dump failed: {emergency_error} - returning unannotated screenshot")
+                    logger.error(
+                        f"❌ Emergency dump failed: {emergency_error} - returning unannotated screenshot"
+                    )
                     return (screenshot_result[0], screenshot_bytes)  # Return plain screenshot
 
             # Create annotated version using FRESH elements from current screen
@@ -782,7 +925,7 @@ class AdbTools(Tools):
                     logger.error(f"CRITICAL: Failed to save LLM screenshot to {filepath}: {e}")
             else:
                 logger.error(
-                    f"CRITICAL: No screenshot save directory set - cannot save LLM screenshot!"
+                    "CRITICAL: No screenshot save directory set - cannot save LLM screenshot!"
                 )
 
             return (screenshot_result[0], annotated_bytes)
@@ -1040,248 +1183,6 @@ class AdbTools(Tools):
             return {
                 "error": str(e),
                 "message": f"Error getting combined state: {str(e)}",
-            }
-
-        async def get_state_direct(
-        self, serial: Optional[str] = None, ensure_stable: bool = False
-    ) -> Dict[str, Any]:
-        """
-        DISABLED: XML uiautomator method replaced for performance.
-        
-        This method was causing 2-5 second delays and race condition crashes.
-        Now returns a minimal structure to force fallback to better methods.
-        
-        Args:
-            serial: Optional device serial number  
-            ensure_stable: Ignored in this implementation
-            
-        Returns:
-            Minimal dictionary structure indicating XML method is disabled
-        """
-        logger.warning("🚫 XML uiautomator method disabled - use alternative UI access methods")
-        
-        # Return minimal structure that indicates no elements found
-        # This forces the system to use alternative approaches like Jeeves
-        return {
-            "error": "XML uiautomator disabled",
-            "message": "Use Jeeves accessibility service or alternative UI access methods",
-            "a11y_tree": [],
-            "phone_state": {"activity": "unknown"},
-            "disabled_method": "xml_uiautomator",
-            "recommendation": "Enable Jeeves accessibility service for fast UI access"
-        }    ) -> Dict[str, Any]:
-        """
-        Get fresh accessibility tree directly from Android uiautomator, bypassing Portal cache.
-
-        Args:
-            serial: Optional device serial number
-            ensure_stable: If True, verify UI is stable by comparing consecutive dumps
-
-        Returns:
-            Dictionary containing fresh 'a11y_tree' data directly from Android
-        """
-        import xml.etree.ElementTree as ET
-
-        try:
-            if serial:
-                device = await self.device_manager.get_device(serial)
-                if not device:
-                    raise ValueError(f"Device {serial} not found")
-            else:
-                device = await self.get_device()
-
-            # Use native uiautomator to get FRESH accessibility tree directly
-            logger.info("🔍 Getting fresh UI state directly from Android uiautomator...")
-
-            # CRITICAL: Acquire lock to prevent concurrent uiautomator calls
-            async with AdbTools._uiautomator_lock:
-                logger.debug("🔒 Acquired uiautomator lock")
-
-                adb_output = None
-                max_attempts = 5  # Increased from 3 for better reliability
-                
-                # Retry with escalating strategies
-                for attempt in range(max_attempts):
-                    try:
-                        # Clean environment before retry (except first attempt)
-                        if attempt > 0:
-                            logger.info(f"🔄 Retry {attempt + 1}/{max_attempts} with cleanup...")
-                            try:
-                                # Kill any stuck uiautomator processes
-                                await device._adb.shell(device._serial, "pkill -f uiautomator")
-                                await asyncio.sleep(0.2)
-                                # Clean temp files
-                                await device._adb.shell(device._serial, "rm -f /sdcard/ui_*.xml /data/local/tmp/ui_*.xml")
-                                # Exponential backoff
-                                await asyncio.sleep(min(0.5 * (2 ** attempt), 3))
-                            except Exception as cleanup_error:
-                                logger.debug(f"Cleanup warning: {cleanup_error}")
-                        
-                        # Choose dump strategy based on attempt number
-                        if attempt < 2:
-                            # Standard dump location
-                            dump_cmd = "uiautomator dump /sdcard/ui_tree.xml && cat /sdcard/ui_tree.xml"
-                            cleanup_cmd = "rm -f /sdcard/ui_tree.xml"
-                        elif attempt == 2:
-                            # Try compressed dump for faster transfer
-                            dump_cmd = "uiautomator dump --compressed /sdcard/window_dump.xml && cat /sdcard/window_dump.xml"
-                            cleanup_cmd = "rm -f /sdcard/window_dump.xml"
-                        elif attempt == 3:
-                            # Alternative location (may have better permissions)
-                            dump_cmd = "uiautomator dump /data/local/tmp/ui_dump.xml && cat /data/local/tmp/ui_dump.xml"
-                            cleanup_cmd = "rm -f /data/local/tmp/ui_dump.xml"
-                        else:
-                            # Force accessibility refresh before final attempt
-                            logger.info("🔧 Forcing accessibility service refresh...")
-                            try:
-                                await device._adb.shell(
-                                    device._serial,
-                                    "settings put secure enabled_accessibility_services com.android.talkback/com.android.talkback.TalkBackService"
-                                )
-                                await asyncio.sleep(0.3)
-                                await device._adb.shell(
-                                    device._serial,
-                                    "settings put secure enabled_accessibility_services ''"
-                                )
-                                await asyncio.sleep(0.3)
-                            except:
-                                pass
-                            dump_cmd = "uiautomator dump /sdcard/ui_final.xml && cat /sdcard/ui_final.xml"
-                            cleanup_cmd = "rm -f /sdcard/ui_final.xml"
-                        
-                        # Increase timeout on retries
-                        timeout = 5.0 + (attempt * 2)
-                        
-                        # Run uiautomator dump
-                        adb_output = await asyncio.wait_for(
-                            device._adb.shell(device._serial, dump_cmd),
-                            timeout=timeout
-                        )
-
-                        logger.debug(
-                            f"uiautomator output length: {len(adb_output) if adb_output else 0}"
-                        )
-
-                        # Validate output before accepting it
-                        if adb_output and "<?xml" in adb_output:
-                            xml_start = adb_output.find("<?xml")
-                            xml_test = adb_output[xml_start:xml_start + 200]
-                            if "<hierarchy" in xml_test:
-                                logger.info(f"✅ Got valid XML on attempt {attempt + 1}")
-                                # Proactive cleanup
-                                try:
-                                    await device._adb.shell(device._serial, cleanup_cmd)
-                                    await asyncio.sleep(0.1)
-                                except:
-                                    pass
-                                break  # Success!
-                            else:
-                                logger.warning(f"Invalid XML structure on attempt {attempt + 1}")
-                                adb_output = None
-                        else:
-                            logger.warning(f"No XML in output on attempt {attempt + 1}")
-                            adb_output = None
-                            
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Timeout on attempt {attempt + 1}/{max_attempts} (timeout: {timeout}s)")
-                        adb_output = None
-                    except Exception as e:
-                        logger.warning(f"Error on attempt {attempt + 1}/{max_attempts}: {e}")
-                        adb_output = None
-                
-                # If all attempts failed, return error with empty tree
-                if not adb_output:
-                    logger.error(f"❌ All {max_attempts} attempts to get UI state failed")
-                    return {
-                        "error": "UIAutomator Failed",
-                        "message": f"uiautomator command failed after {max_attempts} attempts",
-                        "a11y_tree": [],  # Return empty tree to prevent crashes
-                        "phone_state": {"activity": "unknown"}
-                    }
-
-            # More lenient check - just need XML (UI hierchary typo exists in some Android versions)
-            if not adb_output or "<?xml" not in adb_output:
-                logger.error("No valid XML in uiautomator output after all attempts")
-                return {
-                    "error": "Dump Error",
-                    "message": "Failed to dump UI hierarchy with uiautomator",
-                    "a11y_tree": [],
-                    "phone_state": {"activity": "unknown"}
-                }
-
-            # Extract XML content (after any dump confirmation message)
-            xml_start = adb_output.find("<?xml")
-            if xml_start == -1:
-                logger.error("XML marker not found in output")
-                return {
-                    "error": "Parse Error",
-                    "message": "No XML found in uiautomator output", 
-                    "a11y_tree": [],
-                    "phone_state": {"activity": "unknown"}
-                }
-
-            xml_content = adb_output[xml_start:]
-
-            # If ensure_stable is True, verify UI has stabilized
-            if ensure_stable:
-                logger.info("🔄 Ensuring UI stability before returning state...")
-                await asyncio.sleep(0.5)  # Brief pause
-
-                # Get a second dump to compare
-                try:
-                    second_dump = await asyncio.wait_for(
-                        device._adb.shell(
-                            device._serial,
-                            "uiautomator dump /sdcard/ui_tree2.xml && cat /sdcard/ui_tree2.xml",
-                        ),
-                        timeout=5.0,
-                    )
-
-                    # Clean up second dump file
-                    try:
-                        await device._adb.shell(device._serial, "rm -f /sdcard/ui_tree2.xml")
-                    except:
-                        pass
-
-                    # Compare the two dumps
-                    if second_dump and "<?xml" in second_dump:
-                        second_xml_start = second_dump.find("<?xml")
-                        second_xml = second_dump[second_xml_start:]
-
-                        # If XML content differs significantly, use the newer one
-                        if len(second_xml) != len(xml_content):
-                            logger.info("🔄 UI changed, using newer dump")
-                            xml_content = second_xml
-                        else:
-                            logger.debug("✅ UI appears stable")
-                except:
-                    # If second dump fails, continue with first
-                    logger.warning("Could not verify UI stability, proceeding with initial dump")
-
-            # Parse XML into accessibility elements
-            try:
-                root = ET.fromstring(xml_content)
-                # Reset counter for each parse to start from 0
-                elements = self._parse_ui_elements(root, global_index_counter=[0])
-
-                # Update cache with fresh data - this maintains the mapping
-                self.clickable_elements_cache = elements
-
-                return {
-                    "a11y_tree": elements,
-                    "phone_state": {},  # Placeholder - could add dumpsys calls if needed
-                }
-
-            except ET.ParseError as e:
-                return {
-                    "error": "XML Parse Error",
-                    "message": f"Failed to parse XML: {str(e)}",
-                }
-
-        except Exception as e:
-            return {
-                "error": str(e),
-                "message": f"Error getting direct state: {str(e)}",
             }
 
     def _parse_ui_elements(self, node, global_index_counter=[0]) -> List[Dict[str, Any]]:

@@ -1,14 +1,16 @@
-from llama_index.core.llms.llm import LLM
-from droidrun.agent.context import EpisodicMemory
-from droidrun.agent.context.reflection import Reflection
-from llama_index.core.base.llms.types import ChatMessage, ImageBlock
-from droidrun.agent.utils.chat_utils import add_screenshot_image_block
-from droidrun.agent.context.agent_persona import AgentPersona
-import json
-from typing import Dict, Any, List, Optional
-import logging
-from PIL import Image, ImageDraw, ImageFont
 import io
+import json
+import logging
+from typing import Optional
+
+from llama_index.core.base.llms.types import ChatMessage
+from llama_index.core.llms.llm import LLM
+from PIL import Image, ImageDraw, ImageFont
+
+from droidrun.agent.context import EpisodicMemory
+from droidrun.agent.context.agent_persona import AgentPersona
+from droidrun.agent.context.reflection import Reflection
+from droidrun.agent.utils.chat_utils import add_screenshot_image_block
 
 logger = logging.getLogger("droidrun")
 
@@ -30,16 +32,16 @@ class Reflector:
 
         episodic_memory_content = self._format_episodic_memory(episodic_memory)
         persona_content = self._format_persona(episodic_memory.persona)
-        
+
         # Create user message content with persona information
         user_content = f"{persona_content}\n\nGoal: {goal}\n\nEpisodic Memory Steps:\n{episodic_memory_content}\n\nPlease evaluate if the goal was achieved and provide your analysis in the specified JSON format."
-        
+
         # Create user message
         user_message = ChatMessage(role="user", content=user_content)
-        
+
         # Create the screenshots grid and add as ImageBlock if screenshots exist
         screenshots_grid = self._create_screenshots_grid(episodic_memory)
-        
+
         if screenshots_grid:
             # Use the add_screenshot_image_block function to properly add the image
             messages_list = [system_prompt, user_message]
@@ -50,29 +52,29 @@ class Reflector:
         response = await self.llm.achat(messages=messages)
 
         logger.info(f"REFLECTION {response.message.content}")
-        
+
         try:
             # Clean the response content to handle markdown code blocks
             content = response.message.content.strip()
-            
+
             # Remove markdown code block formatting if present
             if content.startswith('```json'):
                 content = content[7:]  # Remove ```json
             elif content.startswith('```'):
                 content = content[3:]   # Remove ```
-            
+
             if content.endswith('```'):
                 content = content[:-3]  # Remove trailing ```
-            
+
             content = content.strip()
-            
+
             parsed_response = json.loads(content)
             return Reflection.from_dict(parsed_response)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse reflection response: {e}")
             logger.error(f"Raw response: {response.message.content}")
             return await self.reflect_on_episodic_memory(episodic_memory=episodic_memory, goal=goal)
-    
+
     def _create_screenshots_grid(self, episodic_memory: EpisodicMemory) -> Optional[bytes]:
         """Create a 3x2 grid of screenshots from episodic memory steps."""
         # Extract screenshots from steps
@@ -86,32 +88,32 @@ class Reflector:
                 except Exception as e:
                     logger.warning(f"Failed to load screenshot: {e}")
                     continue
-        
+
         if not screenshots:
             return None
-        
+
         num_screenshots = min(len(screenshots), 6)
         cols, rows = num_screenshots, 1
-        
+
         screenshots = screenshots[:num_screenshots]
-        
+
         if not screenshots:
             return None
-        
+
         if screenshots:
             cell_width = screenshots[0].width // 2
             cell_height = screenshots[0].height // 2
         else:
             return None
-        
+
         # Define header bar height
         header_height = 60
-        
+
         # Create the grid image with space for header bars
         grid_width = cols * cell_width
         grid_height = rows * (cell_height + header_height)
         grid_image = Image.new('RGB', (grid_width, grid_height), color='white')
-        
+
         # Set up font for step text
         draw = ImageDraw.Draw(grid_image)
         try:
@@ -119,58 +121,58 @@ class Reflector:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
         except:
             font = ImageFont.load_default()
-        
+
         # Place screenshots in the grid with header bars
         for i, screenshot in enumerate(screenshots):
             row = i // cols
             col = i % cols
-            
+
             # Calculate positions
             x = col * cell_width
             header_y = row * (cell_height + header_height)
             screenshot_y = header_y + header_height
-            
+
             # Create header bar
             header_rect = [x, header_y, x + cell_width, header_y + header_height]
             draw.rectangle(header_rect, fill='#2c3e50')  # Dark blue header
-            
+
             # Draw step text in header bar
             text = f"Step {i+1}"
             # Get text dimensions for centering
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
-            
+
             # Center text in header bar
             text_x = x + (cell_width - text_width) // 2
             text_y = header_y + (header_height - text_height) // 2
-            
+
             draw.text((text_x, text_y), text, fill='white', font=font)
-            
+
             # Resize and place screenshot below header
             resized_screenshot = screenshot.resize((cell_width, cell_height), Image.Resampling.LANCZOS)
             grid_image.paste(resized_screenshot, (x, screenshot_y))
-        
+
         # Save grid to disk for debugging (only if debug flag is enabled)
         if self.debug:
             import os
             from datetime import datetime
-            
+
             # Create debug directory if it doesn't exist
             debug_dir = "reflection_screenshots"
             os.makedirs(debug_dir, exist_ok=True)
-            
+
             # Save with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             debug_filename = os.path.join(debug_dir, f"screenshot_grid_{timestamp}.png")
             grid_image.save(debug_filename)
             logger.info(f"Screenshot grid saved to: {debug_filename}")
-        
+
         # Convert to bytes for use with add_screenshot_image_block
         buffer = io.BytesIO()
         grid_image.save(buffer, format='PNG')
         buffer.seek(0)
-        
+
         return buffer.getvalue()
 
     def _create_system_prompt(self) -> str:
@@ -224,7 +226,7 @@ class Reflector:
         - ONLY return the JSON object, no additional text or formatting"""
 
         return system_prompt
-    
+
     def _format_persona(self, persona: AgentPersona) -> str:
         """Format the agent persona information for the user prompt."""
         persona_content = f"""ACTOR AGENT PERSONA:
@@ -233,20 +235,20 @@ class Reflector:
         - Available Tools: {', '.join(persona.allowed_tools)}
         - Expertise Areas: {', '.join(persona.expertise_areas)}
         - System Prompt: {persona.system_prompt}"""
-                
+
         return persona_content
-    
+
     def _format_episodic_memory(self, episodic_memory: EpisodicMemory) -> str:
         """Format the episodic memory steps into a readable format for analysis."""
         formatted_steps = []
-        
+
         for i, step in enumerate(episodic_memory.steps, 1):
             try:
                 # Parse the JSON strings to get the original content without escape characters
                 chat_history = json.loads(step.chat_history)
                 response = json.loads(step.response)
-                
-                
+
+
                 formatted_step = f"""Step {i}:
             Chat History: {json.dumps(chat_history, indent=2)}
             Response: {json.dumps(response, indent=2)}
@@ -261,5 +263,5 @@ class Reflector:
             Timestamp: {step.timestamp}
             ---"""
             formatted_steps.append(formatted_step)
-        
+
         return "\n".join(formatted_steps)

@@ -48,15 +48,15 @@ def format_ui_elements_as_text(elements) -> str:
     for elem in elements:
         if not isinstance(elem, dict):
             continue
-            
+
         idx = elem.get("index", "?")
         text = elem.get("text", "")
         desc = elem.get("content-desc", "")
-        
+
         # Get both class and className fields (different data sources use different names)
         cls = elem.get("class", elem.get("className", ""))
         cls_short = cls.split(".")[-1] if cls else ""
-        
+
         # Handle both resource-id and resourceId field names
         resource_id = elem.get("resource-id", elem.get("resourceId", ""))
         bounds = elem.get("bounds", "")
@@ -70,17 +70,17 @@ def format_ui_elements_as_text(elements) -> str:
             label_parts.append(f'"{desc}"')
         else:
             label_parts.append(f"[{cls_short}]" if cls_short else "[Element]")
-            
+
         # Add resource ID for better identification (crucial for buttons)
         if resource_id:
             label_parts.append(f"id:{resource_id}")
-            
+
         # Add class info for context
         if cls_short and not resource_id:  # Only show class if no resource_id
             label_parts.append(f"class:{cls_short}")
 
         label = " ".join(label_parts)
-        
+
         if clickable:
             ui_text += f"  [{idx}] {label} (clickable) at {bounds}\n"
         else:

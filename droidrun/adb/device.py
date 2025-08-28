@@ -3,11 +3,12 @@ Device - High-level representation of an Android device.
 """
 
 import os
-import tempfile
-import time
 import random
 import string
-from typing import Dict, Optional, Tuple, List
+import tempfile
+import time
+from typing import Dict, List, Optional, Tuple
+
 from droidrun.adb.wrapper import ADBWrapper
 
 
@@ -231,9 +232,7 @@ class Device:
         try:
             # Generate a random filename for the device
             timestamp = int(time.time())
-            random_suffix = "".join(
-                random.choices(string.ascii_lowercase + string.digits, k=8)
-            )
+            random_suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
             device_path = f"/sdcard/screenshot_{timestamp}_{random_suffix}.png"
 
             # Take screenshot using screencap command
@@ -252,8 +251,11 @@ class Device:
                 screenshot_data = f.read()
 
             import logging
+
             logger = logging.getLogger("droidrun")
-            logger.debug(f"Screenshot captured: {len(screenshot_data) / 1024:.1f}KB (uncompressed PNG)")
+            logger.debug(
+                f"Screenshot captured: {len(screenshot_data) / 1024:.1f}KB (uncompressed PNG)"
+            )
 
             return screenshot_path, screenshot_data
 
@@ -263,8 +265,8 @@ class Device:
                 os.unlink(screenshot_path)
             except OSError:
                 pass
-            raise RuntimeError(f"Screenshot capture failed: {str(e)}")
-        
+            raise RuntimeError(f"Screenshot capture failed: {str(e)}") from None
+
     def _parse_package_list(self, output: str) -> List[Dict[str, str]]:
         """Parse the output of 'pm list packages -f' command.
 
@@ -305,6 +307,6 @@ class Device:
         packages = self._parse_package_list(output)
         # Format package list for better readability
         package_list = [pack["package"] for pack in packages]
-        #for package in package_list:
+        # for package in package_list:
         #    print(package)
         return package_list

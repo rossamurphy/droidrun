@@ -1,13 +1,15 @@
 import logging
-from typing import List, Dict, Any, Callable
+from typing import Any, Callable, Dict, List
+
 from llama_index.core.base.llms.types import ChatMessage
 from llama_index.core.llms.llm import LLM
 from llama_index.core.workflow import Context, step
+
 from droidrun.agent.codeact.codeact_agent import CodeActAgent
-from droidrun.agent.codeact.events import TaskInputEvent, TaskThinkingEvent, TaskEndEvent
+from droidrun.agent.codeact.events import TaskEndEvent, TaskInputEvent, TaskThinkingEvent
 from droidrun.agent.common.events import ScreenshotEvent
-from droidrun.agent.utils import chat_utils
 from droidrun.agent.context.agent_persona import AgentPersona
+from droidrun.agent.utils import chat_utils
 
 logger = logging.getLogger("droidrun")
 
@@ -112,7 +114,7 @@ class VisionCodeActAgent(CodeActAgent):
         print("\n" + "📸"*60)
         print("👁️  VISION AGENT - SCREENSHOT ANALYSIS")
         print("📸"*60)
-        
+
         # Use shorter context window for vision processing
         response = await self._get_llm_response(
             ctx, chat_history, debug=self.debug, max_tokens=2000
@@ -183,13 +185,14 @@ class VisionCodeActAgent(CodeActAgent):
             ]
             final_response = {
                 "role": "user",
-                "content": f"Final State Observation: Screenshot saved with final UI state.",
+                "content": "Final State Observation: Screenshot saved with final UI state.",
             }
 
             # Create final episodic memory step
-            from droidrun.agent.context.episodic_memory import EpisodicMemoryStep
             import json
             import time
+
+            from droidrun.agent.context.episodic_memory import EpisodicMemoryStep
 
             final_step = EpisodicMemoryStep(
                 chat_history=json.dumps(final_chat_history),

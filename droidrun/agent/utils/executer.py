@@ -1,14 +1,15 @@
-import io
-import contextlib
-import ast
-import traceback
-import logging
-from typing import Any, Dict
-from droidrun.agent.utils.async_utils import async_to_sync
-from llama_index.core.workflow import Context
 import asyncio
-from asyncio import AbstractEventLoop
+import contextlib
+import io
+import logging
 import threading
+import traceback
+from asyncio import AbstractEventLoop
+from typing import Any, Dict
+
+from llama_index.core.workflow import Context
+
+from droidrun.agent.utils.async_utils import async_to_sync
 
 logger = logging.getLogger("droidrun")
 
@@ -93,7 +94,7 @@ class SimpleCodeExecutor:
         """
         # Update UI elements before execution
         self.globals['ui_state'] = await ctx.get("ui_state", None)
-        
+
         # Capture stdout and stderr
         stdout = io.StringIO()
         stderr = io.StringIO()

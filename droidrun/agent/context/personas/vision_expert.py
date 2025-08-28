@@ -2,7 +2,7 @@ from droidrun.agent.context.agent_persona import AgentPersona
 from droidrun.tools import Tools
 
 VISION_EXPERT = AgentPersona(
-    name="VisionExpert", 
+    name="VisionExpert",
     description="Vision-focused agent that uses screenshots with numbered bounding boxes for navigation",
     expertise_areas=[
         "Visual UI analysis", "Screenshot interpretation", "Bounding box navigation",
@@ -10,7 +10,7 @@ VISION_EXPERT = AgentPersona(
     ],
     allowed_tools=[
         Tools.tap_by_index.__name__,
-        Tools.input_text.__name__, 
+        Tools.input_text.__name__,
         Tools.swipe.__name__,
         Tools.press_key.__name__,
         Tools.start_app.__name__,

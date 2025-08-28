@@ -1,10 +1,11 @@
-import os
-import torch
-import importlib
-import logging
-from typing import Any, Dict, Tuple
 import hashlib
+import importlib
 import json
+import logging
+import os
+from typing import Any, Dict
+
+import torch
 
 # Import unsloth first if we're going to use FineTunedGemma
 # This ensures optimizations are applied before transformers is imported
@@ -24,8 +25,8 @@ if os.environ.get("LLM_PROVIDER") == "FineTunedGemma" or "FineTunedGemma" in str
 # getting weird threading issues using the 3090 ... try this to avoid (Gemini recommended it)
 # torch._dynamo.disable()
 
-from transformers import BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
 from llama_index.core.llms.llm import LLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 # Configure logging
 logger = logging.getLogger("droidrun")
@@ -47,7 +48,7 @@ def clear_llm_cache():
     global _MODEL_CACHE
     logger.info(f"Clearing LLM cache ({len(_MODEL_CACHE)} models)")
     _MODEL_CACHE.clear()
-    
+
     # Also try to free GPU memory if using CUDA
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -90,7 +91,7 @@ def load_llm(provider_name: str, use_cache: bool = True, **kwargs: Any) -> LLM:
     """
     if not provider_name:
         raise ValueError("provider_name cannot be empty.")
-    
+
     # Check cache first
     if use_cache:
         cache_key = _get_cache_key(provider_name, **kwargs)
@@ -106,17 +107,17 @@ def load_llm(provider_name: str, use_cache: bool = True, **kwargs: Any) -> LLM:
     if provider_name == "FineTunedGemma":
         logger.info("Loading FineTunedGemma model from local adapters...")
         from droidrun.agent.llms.finetuned_gemma import FineTunedGemmaLLM
-        
+
         llm_instance = FineTunedGemmaLLM(**kwargs)
-        
+
         # Cache the instance
         if use_cache:
             cache_key = _get_cache_key(provider_name, **kwargs)
             _MODEL_CACHE[cache_key] = llm_instance
             logger.info(f"Cached FineTunedGemma instance (cache key: {cache_key[:8]}...)")
-        
+
         return llm_instance
-    
+
     if provider_name == "HuggingFaceLLM":
         logger.info("Handling special case for HuggingFaceLLM provider.")
         from llama_index.llms.huggingface import HuggingFaceLLM
@@ -139,7 +140,7 @@ def load_llm(provider_name: str, use_cache: bool = True, **kwargs: Any) -> LLM:
             "torch_dtype": kwargs.get("torch_dtype"),
             "device_map": kwargs.get("device_map", device_map),
             "max_memory": kwargs.get("max_memory"),
-            "attn_implementation": kwargs.get("attn_implementation") 
+            "attn_implementation": kwargs.get("attn_implementation")
         }
 
         print("Using device map:", model_kwargs["device_map"])
@@ -229,7 +230,7 @@ def load_llm(provider_name: str, use_cache: bool = True, **kwargs: Any) -> LLM:
         except AttributeError:
             # Fallback to original name if capitalized version doesn't exist
             llm_class = getattr(llm_module, provider_name)
-            
+
         if not issubclass(llm_class, LLM):
             raise TypeError(f"Class '{provider_name}' is not a valid LLM subclass.")
 
@@ -238,13 +239,13 @@ def load_llm(provider_name: str, use_cache: bool = True, **kwargs: Any) -> LLM:
         logger.info(f"Initializing {llm_class.__name__} with args: {list(filtered_kwargs.keys())}")
         llm_instance = llm_class(**filtered_kwargs)
         logger.info(f"Successfully loaded and initialized LLM: {provider_name}")
-        
+
         # Cache the model instance
         if use_cache:
             cache_key = _get_cache_key(provider_name, **kwargs)
             _MODEL_CACHE[cache_key] = llm_instance
             logger.info(f"Cached {provider_name} instance (cache key: {cache_key[:8]}...)")
-        
+
         return llm_instance
     except Exception as e:
         logger.error(f"Failed to initialize {provider_name}: {e}")

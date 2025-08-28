@@ -5,7 +5,7 @@ DEFAULT = AgentPersona(
     name="Default",
     description="Default Agent. Use this as your Default",
     expertise_areas=[
-        "UI navigation", "button interactions", "text input", 
+        "UI navigation", "button interactions", "text input",
         "menu navigation", "form filling", "scrolling", "app launching"
     ],
     allowed_tools=[
