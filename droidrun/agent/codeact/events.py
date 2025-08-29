@@ -32,4 +32,3 @@ class TaskEndEvent(Event):
 
 class EpisodicMemoryEvent(Event):
     episodic_memory: EpisodicMemory
-

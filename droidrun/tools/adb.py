@@ -3,65 +3,53 @@ UI Actions - Core UI interaction tools for Android device control.
 """
 
 import os
-
-print(f"DEBUG: Loading adb.py from: {os.path.abspath(__file__)}")
-
-import asyncio
 import io
 import json
-import logging
-import math
-import os
-import shlex
-import signal
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
-from PIL import Image, ImageDraw, ImageFont
-
-from droidrun.adb.device import Device
-from droidrun.adb.manager import DeviceManager
+import logging
+from llama_index.core.workflow import Context
+from typing import Optional, Dict, Tuple, List, Any
+from droidrun.agent.common.events import (
+    InputTextActionEvent,
+    KeyPressActionEvent,
+    StartAppEvent,
+    SwipeActionEvent,
+    TapActionEvent,
+    DragActionEvent,
+)
 from droidrun.tools.tools import Tools
+from adbutils import adb
+import requests
+import base64
 
-logger = logging.getLogger("droidrun-adb-tools")
+logger = logging.getLogger("droidrun-tools")
+PORTAL_DEFAULT_TCP_PORT = 8080
 
 
 class AdbTools(Tools):
-    print("THIS IS A TEST TO SEE IF THE DOCKERFILE CHANGES ARE WORKING")
     """Core UI interaction tools for Android device control."""
-
-    # Class-level lock to prevent concurrent uiautomator calls across all instances
-    _uiautomator_lock = asyncio.Lock()
-
-    # Global toggle for UI stability checking (set via environment variable or directly)
-    UI_STABILITY_CHECK = os.environ.get("UI_STABILITY_CHECK", "auto").lower()
-
-    @classmethod
-    def set_stability_check(cls, mode: str):
-        """Set global UI stability checking mode.
-
-        Args:
-            mode: 'true'/'1' (always on), 'false'/'0' (always off), or 'auto' (smart mode)
-        """
-        cls.UI_STABILITY_CHECK = str(mode).lower()
-        logger.info(f"🔧 UI stability checking set to: {cls.UI_STABILITY_CHECK}")
 
     def __init__(
         self,
-        serial: str,
-        host_volume_path: str,
-        container_mount_path: str,
-        adb_path: str = "adb",
-        ensure_ui_stability: Optional[bool] = None,
+        serial: str | None = None,
+        use_tcp: bool = False,
+        remote_tcp_port: int = PORTAL_DEFAULT_TCP_PORT,
     ) -> None:
+        """Initialize the AdbTools instance.
+
+        Args:
+            serial: Device serial number
+            use_tcp: Whether to use TCP communication (default: False)
+            tcp_port: TCP port for communication (default: 8080)
+        """
+        self.device = adb.device(serial=serial)
+        self.use_tcp = use_tcp
+        self.remote_tcp_port = remote_tcp_port
+        self.tcp_forwarded = False
+
+        self._ctx = None
         # Instance‐level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
-
-        # Instance-level UI stability setting (overrides global if set)
-        self.ensure_ui_stability = ensure_ui_stability
-        self.serial = serial
-        self.adb_path = adb_path
-        self.device_manager = DeviceManager(adb_path=adb_path)
         self.last_screenshot = None
         self.reason = None
         self.success = None
@@ -70,98 +58,101 @@ class AdbTools(Tools):
         self.memory: List[str] = []
         # Store all screenshots with timestamps
         self.screenshots: List[Dict[str, Any]] = []
-        # Screenshot counter for naming
-        self.screenshot_counter = 0
-        # Directory for saving screenshots
-        self.screenshot_save_dir: Optional[str] = None
+        # Trajectory saving level
+        self.save_trajectories = "none"
 
-        self.recording_process: Optional[asyncio.subprocess.Process] = None
-        self.recording_host_path: Optional[str] = None
-        self.host_volume_path = os.path.abspath(host_volume_path)  # Resolve to an absolute path
-        self.container_mount_path = container_mount_path
+        self.setup_keyboard()
 
-    def set_screenshot_save_dir(self, directory: str) -> None:
-        """Set the directory where screenshots should be saved.
+        # Set up TCP forwarding if requested
+        if self.use_tcp:
+            self.setup_tcp_forward()
 
-        Args:
-            directory: Path to directory where screenshots will be saved
+    def setup_tcp_forward(self) -> bool:
         """
-        self.screenshot_save_dir = directory
-        os.makedirs(directory, exist_ok=True)
-        logger.info(f"Screenshot save directory set to: {directory}")
-
-    def should_ensure_stability(self, for_screenshot: bool = False) -> bool:
-        """Determine if UI stability checking should be used.
-
-        Priority order:
-        1. Instance-level setting (if explicitly set)
-        2. Environment variable UI_STABILITY_CHECK
-        3. Default behavior based on context
-
-        Args:
-            for_screenshot: If True, checking for screenshot annotation context
+        Set up ADB TCP port forwarding for communication with the portal app.
 
         Returns:
-            bool: Whether to ensure UI stability
+            bool: True if forwarding was set up successfully, False otherwise
         """
-        # If instance has explicit setting, use it
-        if self.ensure_ui_stability is not None:
-            return self.ensure_ui_stability
+        try:
+            logger.debug(
+                f"Setting up TCP port forwarding for port tcp:{self.remote_tcp_port} on device {self.device.serial}"
+            )
+            # Use adb forward command to set up port forwarding
+            self.local_tcp_port = self.device.forward_port(self.remote_tcp_port)
+            self.tcp_base_url = f"http://localhost:{self.local_tcp_port}"
+            logger.debug(f"TCP port forwarding set up successfully to {self.tcp_base_url}")
 
-        # Check global setting
-        global_setting = self.UI_STABILITY_CHECK
+            # Test the connection with a ping
+            try:
+                response = requests.get(f"{self.tcp_base_url}/ping", timeout=5)
+                if response.status_code == 200:
+                    logger.debug("TCP connection test successful")
+                    self.tcp_forwarded = True
+                    return True
+                else:
+                    logger.warning(
+                        f"TCP connection test failed with status: {response.status_code}"
+                    )
+                    return False
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"TCP connection test failed: {e}")
+                return False
 
-        if global_setting == "true" or global_setting == "1":
-            return True
-        elif global_setting == "false" or global_setting == "0":
+        except Exception as e:
+            logger.error(f"Failed to set up TCP port forwarding: {e}")
+            self.tcp_forwarded = False
             return False
-        elif global_setting == "auto":
-            # Auto mode: enable for screenshots (training data), disable otherwise
-            return for_screenshot
-        else:
-            # Default to auto behavior
-            return for_screenshot
 
-    def get_device_serial(self) -> str:
-        """Get the device serial from the instance or environment variable."""
-        # First try using the instance's serial
-        if self.serial:
-            return self.serial
-
-    async def get_device(self) -> Optional[Device]:
-        """Get the device instance using the instance's serial or from environment variable.
+    def teardown_tcp_forward(self) -> bool:
+        """
+        Remove ADB TCP port forwarding.
 
         Returns:
-            Device instance or None if not found
+            bool: True if forwarding was removed successfully, False otherwise
         """
-        serial = self.get_device_serial()
-        if not serial:
-            raise ValueError("No device serial specified - set device_serial parameter")
+        try:
+            if self.tcp_forwarded:
+                logger.debug(f"Removing TCP port forwarding for port {self.local_tcp_port}")
+                # remove forwarding
+                cmd = f"killforward:tcp:{self.local_tcp_port}"
+                logger.debug(f"Removing TCP port forwarding: {cmd}")
+                c = self.device.open_transport(cmd)
+                c.close()
 
-        device = await self.device_manager.get_device(serial)
-        if not device:
-            raise ValueError(f"Device {serial} not found")
+                self.tcp_forwarded = False
+                logger.debug(f"TCP port forwarding removed")
+                return True
+            return True
+        except Exception as e:
+            logger.error(f"Failed to remove TCP port forwarding: {e}")
+            return False
 
-        return device
-
-    def parse_package_list(self, output: str) -> List[Dict[str, str]]:
-        """Parse the output of 'pm list packages -f' command.
-
-        Args:
-            output: Raw command output from 'pm list packages -f'
+    def setup_keyboard(self) -> bool:
+        """
+        Set up the DroidRun keyboard as the default input method.
+        Simple setup that just switches to DroidRun keyboard without saving/restoring.
 
         Returns:
-            List of dictionaries containing package info with 'package' and 'path' keys
+            bool: True if setup was successful, False otherwise
         """
-        apps = []
-        for line in output.splitlines():
-            if line.startswith("package:"):
-                # Format is: "package:/path/to/base.apk=com.package.name"
-                path_and_pkg = line[8:]  # Strip "package:"
-                if "=" in path_and_pkg:
-                    path, package = path_and_pkg.rsplit("=", 1)
-                    apps.append({"package": package.strip(), "path": path.strip()})
-        return apps
+        try:
+            self.device.shell("ime enable com.jeeves/.JeevesKeyboardIME")
+            self.device.shell("ime set com.jeeves/.JeevesKeyboardIME")
+            logger.debug("DroidRun keyboard setup completed")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to setup DroidRun keyboard: {e}")
+            return False
+
+    def __del__(self):
+        """Cleanup when the object is destroyed."""
+        if hasattr(self, "tcp_forwarded") and self.tcp_forwarded:
+            self.teardown_tcp_forward()
+
+    def _set_context(self, ctx: Context):
+        self._ctx = ctx
 
     def _parse_content_provider_output(self, raw_output: str) -> Optional[Dict[str, Any]]:
         """
@@ -208,106 +199,8 @@ class AdbTools(Tools):
         except json.JSONDecodeError:
             return None
 
-    def _collect_all_indices(self, elements):
-        """Recursively collect all indices from elements and their children."""
-        indices = []
-        for item in elements:
-            if item.get("index") is not None:
-                indices.append(item.get("index"))
-            # Check children if present
-            children = item.get("children", [])
-            indices.extend(self._collect_all_indices(children))
-        return indices
-
-    def _find_element_by_index(self, elements, target_index):
-        """Recursively find an element with the given index."""
-        for item in elements:
-            if item.get("index") == target_index:
-                return item
-            # Check children if present
-            children = item.get("children", [])
-            result = self._find_element_by_index(children, target_index)
-            if result:
-                return result
-        return None
-
-    def _process_elements(self, elements, draw, font):
-        """Recursively process elements and their children."""
-        for element in elements:
-            # Skip elements without bounds or index
-            bounds_str = element.get("bounds")
-            index = element.get("index")
-
-            if bounds_str and index is not None:
-                try:
-                    # Parse bounds: "left,top,right,bottom"
-                    coords = bounds_str.split(",")
-                    if len(coords) == 4:
-                        left, top, right, bottom = map(int, coords)
-
-                        STATUS_BAR_HEIGHT = 0  # Test with no offset first to check alignment
-                        top += STATUS_BAR_HEIGHT
-                        bottom += STATUS_BAR_HEIGHT
-
-                        # Draw red rectangle for bounding box
-                        colours = ["green", "blue", "red", "purple"]
-                        colour = colours[index % len(colours)]
-                        draw.rectangle(
-                            [(left, top), (right, bottom)],
-                            outline=colour,
-                            width=3,
-                        )
-
-                        # Draw white circle with red border for number background
-                        circle_center_x = left + 30
-                        circle_center_y = top + 30
-                        circle_radius = 30
-
-                        draw.ellipse(
-                            [
-                                (
-                                    circle_center_x - circle_radius,
-                                    circle_center_y - circle_radius,
-                                ),
-                                (
-                                    circle_center_x + circle_radius,
-                                    circle_center_y + circle_radius,
-                                ),
-                            ],
-                            fill="white",
-                            outline=colour,
-                            width=2,
-                        )
-
-                        # Draw the index number
-                        number_text = str(index)
-                        if font:
-                            # Get text bounding box to center it
-                            bbox = draw.textbbox((0, 0), number_text, font=font)
-                            text_width = bbox[2] - bbox[0]
-                            text_height = bbox[3] - bbox[1]
-
-                            text_x = circle_center_x - text_width // 2
-                            text_y = circle_center_y - text_height // 2
-
-                            draw.text((text_x, text_y), number_text, fill=colour, font=font)
-                        else:
-                            # Fallback without font
-                            draw.text(
-                                (circle_center_x - 5, circle_center_y - 8),
-                                number_text,
-                                fill=colour,
-                            )
-
-                except (ValueError, IndexError) as e:
-                    logger.debug(f"Could not parse bounds '{bounds_str}' for element {index}: {e}")
-
-            # Process children recursively
-            children = element.get("children", [])
-            if children:
-                self._process_elements(children, draw, font)
-
-    async def tap_by_index(self, index: int, serial: Optional[str] = None) -> str:
+    @Tools.ui_action
+    def tap_by_index(self, index: int) -> str:
         """
         Tap on a UI element by its index.
 
@@ -321,17 +214,40 @@ class AdbTools(Tools):
             Result message
         """
 
+        def collect_all_indices(elements):
+            """Recursively collect all indices from elements and their children."""
+            indices = []
+            for item in elements:
+                if item.get("index") is not None:
+                    indices.append(item.get("index"))
+                # Check children if present
+                children = item.get("children", [])
+                indices.extend(collect_all_indices(children))
+            return indices
+
+        def find_element_by_index(elements, target_index):
+            """Recursively find an element with the given index."""
+            for item in elements:
+                if item.get("index") == target_index:
+                    return item
+                # Check children if present
+                children = item.get("children", [])
+                result = find_element_by_index(children, target_index)
+                if result:
+                    return result
+            return None
+
         try:
             # Check if we have cached elements
             if not self.clickable_elements_cache:
                 return "Error: No UI elements cached. Call get_state first."
 
             # Find the element with the given index (including in children)
-            element = self._find_element_by_index(self.clickable_elements_cache, index)
+            element = find_element_by_index(self.clickable_elements_cache, index)
 
             if not element:
                 # List available indices to help the user
-                indices = sorted(self._collect_all_indices(self.clickable_elements_cache))
+                indices = sorted(collect_all_indices(self.clickable_elements_cache))
                 indices_str = ", ".join(str(idx) for idx in indices[:20])
                 if len(indices) > 20:
                     indices_str += f"... and {len(indices) - 20} more"
@@ -358,18 +274,30 @@ class AdbTools(Tools):
             x = (left + right) // 2
             y = (top + bottom) // 2
 
+            logger.debug(f"Tapping element with index {index} at coordinates ({x}, {y})")
             # Get the device and tap at the coordinates
-            if serial:
-                device = await self.device_manager.get_device(serial)
-                if not device:
-                    return f"Error: Device {serial} not found"
-            else:
-                device = await self.get_device()
+            self.device.click(x, y)
+            logger.debug(f"Tapped element with index {index} at coordinates ({x}, {y})")
 
-            await device.tap(x, y)
+            # Emit coordinate action event for trajectory recording
+
+            if self._ctx:
+                element_text = element.get("text", "No text")
+                element_class = element.get("className", "Unknown class")
+
+                tap_event = TapActionEvent(
+                    action_type="tap",
+                    description=f"Tap element at index {index}: '{element_text}' ({element_class}) at coordinates ({x}, {y})",
+                    x=x,
+                    y=y,
+                    element_index=index,
+                    element_text=element_text,
+                    element_bounds=bounds_str,
+                )
+                self._ctx.write_event_to_stream(tap_event)
 
             # Add a small delay to allow UI to update
-            await asyncio.sleep(0.5)
+            time.sleep(0.5)
 
             # Create a descriptive response
             response_parts = []
@@ -387,14 +315,12 @@ class AdbTools(Tools):
 
             response_parts.append(f"Coordinates: ({x}, {y})")
 
-            result = " | ".join(response_parts)
-            print(result)  # Print so SimpleCodeExecutor can capture it
-            return result
+            return " | ".join(response_parts)
         except ValueError as e:
             return f"Error: {str(e)}"
 
     # Rename the old tap function to tap_by_coordinates for backward compatibility
-    async def tap_by_coordinates(self, x: int, y: int) -> bool:
+    def tap_by_coordinates(self, x: int, y: int) -> bool:
         """
         Tap on the device screen at specific coordinates.
 
@@ -406,22 +332,16 @@ class AdbTools(Tools):
             Bool indicating success or failure
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    return f"Error: Device {self.serial} not found"
-            else:
-                device = await self.get_device()
-
-            await device.tap(x, y)
-            print(f"Tapped at coordinates ({x}, {y})")
+            logger.debug(f"Tapping at coordinates ({x}, {y})")
+            self.device.click(x, y)
+            logger.debug(f"Tapped at coordinates ({x}, {y})")
             return True
         except ValueError as e:
-            print(f"Error: {str(e)}")
+            logger.debug(f"Error: {str(e)}")
             return False
 
     # Replace the old tap function with the new one
-    async def tap(self, index: int, wait_after: float = 0.3) -> str:
+    def tap(self, index: int) -> str:
         """
         Tap on a UI element by its index.
 
@@ -430,18 +350,20 @@ class AdbTools(Tools):
 
         Args:
             index: Index of the element to tap
-            wait_after: Time to wait after tap (seconds) for UI to stabilize
 
         Returns:
             Result message
         """
-        result = await self.tap_by_index(index)
-        if wait_after > 0:
-            await asyncio.sleep(wait_after)
-        return result
+        return self.tap_by_index(index)
 
-    async def swipe(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 300
+    @Tools.ui_action
+    def swipe(
+        self,
+        start_x: int,
+        start_y: int,
+        end_x: int,
+        end_y: int,
+        duration_ms: float = 300,
     ) -> bool:
         """
         Performs a straight-line swipe gesture on the device screen.
@@ -451,27 +373,75 @@ class AdbTools(Tools):
             start_y: Starting Y coordinate
             end_x: Ending X coordinate
             end_y: Ending Y coordinate
-            duration_ms: Duration of swipe in milliseconds
+            duration: Duration of swipe in seconds
         Returns:
             Bool indicating success or failure
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    return f"Error: Device {self.serial} not found"
-            else:
-                device = await self.get_device()
+            if self._ctx:
+                swipe_event = SwipeActionEvent(
+                    action_type="swipe",
+                    description=f"Swipe from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration_ms} milliseconds",
+                    start_x=start_x,
+                    start_y=start_y,
+                    end_x=end_x,
+                    end_y=end_y,
+                    duration_ms=duration_ms,
+                )
+                self._ctx.write_event_to_stream(swipe_event)
 
-            await device.swipe(start_x, start_y, end_x, end_y, duration_ms)
-            await asyncio.sleep(1)
-            print(f"Swiped from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration_ms}ms")
+            self.device.swipe(start_x, start_y, end_x, end_y, float(duration_ms / 1000))
+            time.sleep(duration_ms / 1000)
+            logger.debug(
+                f"Swiped from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration_ms} milliseconds"
+            )
             return True
         except ValueError as e:
             print(f"Error: {str(e)}")
             return False
 
-    async def input_text(self, text: str, serial: Optional[str] = None) -> str:
+    @Tools.ui_action
+    def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 3) -> bool:
+        """
+        Performs a straight-line drag and drop gesture on the device screen.
+        Args:
+            start_x: Starting X coordinate
+            start_y: Starting Y coordinate
+            end_x: Ending X coordinate
+            end_y: Ending Y coordinate
+            duration: Duration of swipe in seconds
+        Returns:
+            Bool indicating success or failure
+        """
+        try:
+            logger.debug(
+                f"Dragging from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration} seconds"
+            )
+            self.device.drag(start_x, start_y, end_x, end_y, duration)
+
+            if self._ctx:
+                drag_event = DragActionEvent(
+                    action_type="drag",
+                    description=f"Drag from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration} seconds",
+                    start_x=start_x,
+                    start_y=start_y,
+                    end_x=end_x,
+                    end_y=end_y,
+                    duration=duration,
+                )
+                self._ctx.write_event_to_stream(drag_event)
+
+            time.sleep(duration)
+            logger.debug(
+                f"Dragged from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration} seconds"
+            )
+            return True
+        except ValueError as e:
+            print(f"Error: {str(e)}")
+            return False
+
+    @Tools.ui_action
+    def input_text(self, text: str) -> str:
         """
         Input text on the device.
         Always make sure that the Focused Element is not None before inputting text.
@@ -483,76 +453,76 @@ class AdbTools(Tools):
             Result message
         """
         try:
-            if serial:
-                device = await self.device_manager.get_device(serial)
-                if not device:
-                    return f"Error: Device {serial} not found"
+            if self.use_tcp and self.tcp_forwarded:
+                # Use TCP communication
+                encoded_text = base64.b64encode(text.encode()).decode()
+
+                payload = {"base64_text": encoded_text}
+                response = requests.post(
+                    f"{self.tcp_base_url}/keyboard/input",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10,
+                )
+
+                logger.debug(
+                    f"Keyboard input TCP response: {response.status_code}, {response.text}"
+                )
+
+                if response.status_code != 200:
+                    return f"Error: HTTP request failed with status {response.status_code}: {response.text}"
+
             else:
-                device = await self.get_device()
+                # Fallback to content provider method
+                # Encode the text to Base64
+                encoded_text = base64.b64encode(text.encode()).decode()
 
-            # Save the current keyboard
-            original_ime = await device._adb.shell(
-                device._serial, "settings get secure default_input_method"
-            )
-            original_ime = original_ime.strip()
+                cmd = f'content insert --uri "content://com.jeeves/keyboard/input" --bind base64_text:s:"{encoded_text}"'
+                self.device.shell(cmd)
 
-            # Enable the Droidrun keyboard
-            await device._adb.shell(
-                device._serial, "ime enable com.droidrun.portal/.DroidrunKeyboardIME"
-            )
+            if self._ctx:
+                input_event = InputTextActionEvent(
+                    action_type="input_text",
+                    description=f"Input text: '{text[:50]}{'...' if len(text) > 50 else ''}'",
+                    text=text,
+                )
+                self._ctx.write_event_to_stream(input_event)
 
-            # Set the Droidrun keyboard as the default
-            await device._adb.shell(
-                device._serial, "ime set com.droidrun.portal/.DroidrunKeyboardIME"
-            )
+            logger.debug(f"Text input completed: {text[:50]}{'...' if len(text) > 50 else ''}")
+            return f"Text input completed: {text[:50]}{'...' if len(text) > 50 else ''}"
 
-            # Wait for keyboard to change
-            await asyncio.sleep(1)
-
-            # Encode the text to Base64
-            import base64
-
-            encoded_text = base64.b64encode(text.encode()).decode()
-
-            cmd = f'content insert --uri "content://com.droidrun.portal/keyboard/input" --bind base64_text:s:"{encoded_text}"'
-            await device._adb.shell(device._serial, cmd)
-
-            # Wait for text input to complete
-            await asyncio.sleep(0.5)
-
-            # Restore the original keyboard
-            if original_ime and "com.droidrun.portal" not in original_ime:
-                await device._adb.shell(device._serial, f"ime set {original_ime}")
-
-            result = f"Text input completed: {text[:50]}{'...' if len(text) > 50 else ''}"
-            print(result)  # Print so SimpleCodeExecutor can capture it
-            return result
+        except requests.exceptions.RequestException as e:
+            return f"Error: TCP request failed: {str(e)}"
         except ValueError as e:
             return f"Error: {str(e)}"
         except Exception as e:
             return f"Error sending text input: {str(e)}"
 
-    async def back(self) -> str:
+    @Tools.ui_action
+    def back(self) -> str:
         """
         Go back on the current view.
         This presses the Android back button.
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    return f"Error: Device {self.serial} not found"
-            else:
-                device = await self.get_device()
+            logger.debug("Pressing key BACK")
+            self.device.keyevent(4)
 
-            await device.press_key(3)
-            result = "Pressed key BACK"
-            print(result)  # Print so SimpleCodeExecutor can capture it
-            return result
+            if self._ctx:
+                key_event = KeyPressActionEvent(
+                    action_type="key_press",
+                    description=f"Pressed key BACK",
+                    keycode=4,
+                    key_name="BACK",
+                )
+                self._ctx.write_event_to_stream(key_event)
+
+            return f"Pressed key BACK"
         except ValueError as e:
             return f"Error: {str(e)}"
 
-    async def press_key(self, keycode: int) -> str:
+    @Tools.ui_action
+    def press_key(self, keycode: int) -> str:
         """
         Press a key on the Android device.
 
@@ -566,13 +536,6 @@ class AdbTools(Tools):
             keycode: Android keycode to press
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    return f"Error: Device {self.serial} not found"
-            else:
-                device = await self.get_device()
-
             key_names = {
                 66: "ENTER",
                 4: "BACK",
@@ -581,14 +544,24 @@ class AdbTools(Tools):
             }
             key_name = key_names.get(keycode, str(keycode))
 
-            await device.press_key(keycode)
-            result = f"Pressed key {key_name}"
-            print(result)  # Print so SimpleCodeExecutor can capture it
-            return result
+            if self._ctx:
+                key_event = KeyPressActionEvent(
+                    action_type="key_press",
+                    description=f"Pressed key {key_name}",
+                    keycode=keycode,
+                    key_name=key_name,
+                )
+                self._ctx.write_event_to_stream(key_event)
+
+            logger.debug(f"Pressing key {key_name}")
+            self.device.keyevent(keycode)
+            logger.debug(f"Pressed key {key_name}")
+            return f"Pressed key {key_name}"
         except ValueError as e:
             return f"Error: {str(e)}"
 
-    async def start_app(self, package: str, activity: str = "") -> str:
+    @Tools.ui_action
+    def start_app(self, package: str, activity: str | None = None) -> str:
         """
         Start an app on the device.
 
@@ -597,20 +570,31 @@ class AdbTools(Tools):
             activity: Optional activity name
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    return f"Error: Device {self.serial} not found"
-            else:
-                device = await self.get_device()
+            logger.debug(f"Starting app {package} with activity {activity}")
+            if not activity:
+                dumpsys_output = self.device.shell(
+                    f"cmd package resolve-activity --brief {package}"
+                )
+                activity = dumpsys_output.splitlines()[1].split("/")[1]
 
-            result = await device.start_app(package, activity)
-            print(result)  # Print so SimpleCodeExecutor can capture it
-            return result
-        except ValueError as e:
+            if self._ctx:
+                start_app_event = StartAppEvent(
+                    action_type="start_app",
+                    description=f"Start app {package}",
+                    package=package,
+                    activity=activity,
+                )
+                self._ctx.write_event_to_stream(start_app_event)
+
+            print(f"Activity: {activity}")
+
+            self.device.app_start(package, activity)
+            logger.debug(f"App started: {package} with activity {activity}")
+            return f"App started: {package} with activity {activity}"
+        except Exception as e:
             return f"Error: {str(e)}"
 
-    async def install_app(
+    def install_app(
         self, apk_path: str, reinstall: bool = False, grant_permissions: bool = True
     ) -> str:
         """
@@ -622,320 +606,87 @@ class AdbTools(Tools):
             grant_permissions: Whether to grant all permissions
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    return f"Error: Device {self.serial} not found"
-            else:
-                device = await self.get_device()
-
             if not os.path.exists(apk_path):
                 return f"Error: APK file not found at {apk_path}"
 
-            result = await device.install_app(apk_path, reinstall, grant_permissions)
+            logger.debug(
+                f"Installing app: {apk_path} with reinstall: {reinstall} and grant_permissions: {grant_permissions}"
+            )
+            result = self.device.install(
+                apk_path,
+                nolaunch=True,
+                uninstall=reinstall,
+                flags=["-g"] if grant_permissions else [],
+                silent=True,
+            )
+            logger.debug(f"Installed app: {apk_path} with result: {result}")
             return result
         except ValueError as e:
             return f"Error: {str(e)}"
 
-    async def take_screenshot(self) -> Tuple[str, bytes]:
+    def take_screenshot(self, hide_overlay: bool = True) -> Tuple[str, bytes]:
         """
         Take a screenshot of the device.
         This function captures the current screen and adds the screenshot to context in the next message.
         Also stores the screenshot in the screenshots list with timestamp for later GIF creation.
+
+        Args:
+            hide_overlay: Whether to hide the overlay elements during screenshot (default: True)
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    raise ValueError(f"Device {self.serial} not found")
+            logger.debug("Taking screenshot")
+            img_format = "PNG"
+            image_bytes = None
+
+            if self.use_tcp and self.tcp_forwarded:
+                # Add hideOverlay parameter to URL
+                url = f"{self.tcp_base_url}/screenshot"
+                if not hide_overlay:
+                    url += "?hideOverlay=false"
+
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    tcp_response = response.json()
+
+                    # Check if response has the expected format with data field
+                    if tcp_response.get("status") == "success" and "data" in tcp_response:
+                        # Decode base64 string to bytes
+                        base64_data = tcp_response["data"]
+                        image_bytes = base64.b64decode(base64_data)
+                        logger.debug("Screenshot taken via TCP")
+                    else:
+                        # Handle error response from server
+                        error_msg = tcp_response.get("error", "Unknown error")
+                        raise ValueError(f"Error taking screenshot via TCP: {error_msg}")
+                else:
+                    raise ValueError(f"Error taking screenshot via TCP: {response.status_code}")
+
             else:
-                device = await self.get_device()
-            # Use high quality (95) for vision models to preserve detail
-            screen_tuple = await device.take_screenshot(quality=95)
-            self.last_screenshot = screen_tuple[1]
+                # Fallback to ADB screenshot method
+                img = self.device.screenshot()
+                img_buf = io.BytesIO()
+                img.save(img_buf, format=img_format)
+                image_bytes = img_buf.getvalue()
+                logger.debug("Screenshot taken via ADB")
 
             # Store screenshot with timestamp
-            timestamp = time.time()
             self.screenshots.append(
                 {
-                    "timestamp": timestamp,
-                    "image_data": screen_tuple[1],
-                    "format": screen_tuple[0],  # Usually 'PNG'
+                    "timestamp": time.time(),
+                    "image_data": image_bytes,
+                    "format": img_format,
                 }
             )
+            return img_format, image_bytes
 
-            return screen_tuple
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Error taking screenshot via TCP: {str(e)}")
         except ValueError as e:
             raise ValueError(f"Error taking screenshot: {str(e)}")
-
-    def create_annotated_screenshot(
-        self, screenshot_bytes: bytes, clickable_elements: List[Dict[str, Any]]
-    ) -> bytes:
-        """
-        Create a screenshot with numbered bounding boxes overlaid on clickable elements.
-
-        Args:
-            screenshot_bytes: Raw PNG screenshot bytes
-            clickable_elements: List of clickable elements with bounds and indices
-
-        Returns:
-            bytes: Annotated screenshot as PNG bytes
-        """
-        try:
-            # Open the screenshot image
-            img = Image.open(io.BytesIO(screenshot_bytes))
-            draw = ImageDraw.Draw(img)
-
-            # Try to use a default font, fallback to basic if not available
-            try:
-                font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24
-                )
-            except (OSError, IOError):
-                try:
-                    font = ImageFont.load_default()
-                except:
-                    font = None
-
-            # Process all elements
-            self._process_elements(clickable_elements, draw, font)
-
-            # Convert back to bytes
-            output = io.BytesIO()
-            img.save(output, format="PNG")
-            return output.getvalue()
-
         except Exception as e:
-            logger.warning(f"Failed to create annotated screenshot: {e}")
-            # Return original screenshot if annotation fails
-            return screenshot_bytes
+            raise ValueError(f"Unexpected error taking screenshot: {str(e)}")
 
-    async def get_state_direct(self, device_serial: Optional[str] = None):
-        """
-        Get UI state directly via ADB broadcast intent to the device.
-        This function sends a broadcast to trigger UI state capture and retrieves
-        the JSON data directly from the device without file I/O.
-
-        Args:
-            ensure_stable: Whether to wait for UI stability before capture
-            serial: Optional device serial number
-
-        Returns:
-            Dictionary containing 'a11y_tree' with UI elements and 'phone_state'
-        """
-        try:
-            if device_serial:
-                device = await self.device_manager.get_device(device_serial)
-                if not device:
-                    raise ValueError(f"Device {device_serial} not found")
-            else:
-                device = await self.get_device()
-
-            if not device:
-                raise RuntimeError("Device was not found")
-
-            # Clear logcat for clean data capture
-            await device._adb.shell(device._serial, "logcat -c")
-
-            # Send broadcast intent to trigger UI state capture
-            await device._adb.shell(
-                device._serial, "am broadcast -a com.droidrun.portal.GET_UI_STATE"
-            )
-
-            # Poll for the JSON response in logcat
-            max_retries = 50
-            ui_data = None
-
-            for _ in range(max_retries):
-                await asyncio.sleep(0.05)  # 50ms polling interval
-
-                # Get logcat data
-                logcat_result = await device._adb.shell(device._serial, "logcat -d")
-
-                if not logcat_result:
-                    continue
-
-                # Look for UI data between markers
-                lines = logcat_result.split("\n")
-                capturing = False
-                json_lines = []
-
-                for line in lines:
-                    if "UI_STATE_JSON_START" in line:
-                        capturing = True
-                        continue
-                    elif "UI_STATE_JSON_END" in line:
-                        capturing = False
-                        break
-                    elif capturing:
-                        # Extract JSON from log line
-                        if line.strip().startswith("{") and line.strip().endswith("}"):
-                            json_lines.append(line.strip())
-
-                if json_lines:
-                    try:
-                        # Combine and parse JSON
-                        full_json = "".join(json_lines)
-                        ui_data = json.loads(full_json)
-                        break
-                    except json.JSONDecodeError:
-                        continue
-
-            if not ui_data:
-                # Fallback: Try ContentProvider approach
-                result = await device._adb.shell(
-                    device._serial, "content query --uri content://com.droidrun.portal/ui_state"
-                )
-
-                if result:
-                    ui_data = self._parse_content_provider_output(result)
-
-            if ui_data:
-                # Convert to standard format and cache
-                elements = []
-                for idx, element in enumerate(ui_data.get("elements", [])):
-                    formatted_element = {
-                        "index": idx,
-                        "class": element.get("class", ""),
-                        "text": element.get("text", ""),
-                        "content_desc": element.get("content_desc", ""),
-                        "resource_id": element.get("resource_id", ""),
-                        "clickable": element.get("clickable", False),
-                        "enabled": element.get("enabled", True),
-                        "bounds": f"{element.get('bounds', {}).get('left', 0)},{
-                            element.get('bounds', {}).get('top', 0)
-                        },{element.get('bounds', {}).get('right', 0)},{
-                            element.get('bounds', {}).get('bottom', 0)
-                        }",
-                    }
-
-                    # Only include interactive or informative elements
-                    if (
-                        formatted_element["clickable"]
-                        or formatted_element["text"]
-                        or formatted_element["content_desc"]
-                    ):
-                        elements.append(formatted_element)
-
-                # Cache the elements
-                self.clickable_elements_cache = elements
-
-                return {
-                    "a11y_tree": elements,
-                    "phone_state": {"activity": ui_data.get("current_activity", "unknown")},
-                    "source": "broadcast_intent",
-                    "method": "direct_memory_access",
-                    "file_io": False,
-                    "element_count": len(elements),
-                    "timestamp": time.time(),
-                }
-            else:
-                return {
-                    "error": "No UI state data received",
-                    "a11y_tree": [],
-                    "phone_state": {"activity": "unknown"},
-                }
-
-        except Exception as e:
-            logger.error(f"Error in get_state_direct: {e}")
-            return {
-                "error": str(e),
-                "message": f"Failed to get UI state via broadcast: {e}",
-                "a11y_tree": [],
-                "phone_state": {"activity": "unknown"},
-            }
-
-    async def take_annotated_screenshot(self) -> Tuple[str, bytes]:
-        """
-        Take a screenshot with numbered bounding boxes overlaid on clickable elements.
-
-        Returns:
-            Tuple[str, bytes]: Format and annotated screenshot bytes
-        """
-        logger.info("🎯 take_annotated_screenshot CALLED")
-        try:
-            # Take regular screenshot first
-            screenshot_result = await self.take_screenshot()
-            screenshot_bytes = screenshot_result[1]
-
-            logger.info("🔍 Getting fresh UI state for annotation...")
-            # Check if stability checking should be used for screenshots
-            use_stability = self.should_ensure_stability(for_screenshot=True)
-            if use_stability:
-                logger.info("📊 UI stability checking is ENABLED for screenshot")
-            fresh_state = await self.get_state_direct(device_serial=self.de)
-            current_elements = fresh_state.get("a11y_tree", [])
-
-            if not current_elements:
-                logger.error(
-                    f"No UI elements found! fresh_state keys: {list(fresh_state.keys())}, "
-                    f"fresh_state error: {fresh_state.get('error', 'No error field')}"
-                )
-                # Instead of raising exception, try one more time with different approach
-                logger.info("🔄 Attempting emergency UI dump for annotation...")
-                try:
-                    emergency_state = await self.get_state_direct(ensure_stable=False)
-                    emergency_elements = emergency_state.get("a11y_tree", [])
-                    if emergency_elements:
-                        logger.info(
-                            f"✅ Emergency dump successful: {len(emergency_elements)} elements"
-                        )
-                        current_elements = emergency_elements
-                    else:
-                        logger.error(
-                            "❌ Emergency dump also failed - returning unannotated screenshot"
-                        )
-                        return (screenshot_result[0], screenshot_bytes)  # Return plain screenshot
-                except Exception as emergency_error:
-                    logger.error(
-                        f"❌ Emergency dump failed: {emergency_error} - returning unannotated screenshot"
-                    )
-                    return (screenshot_result[0], screenshot_bytes)  # Return plain screenshot
-
-            # Create annotated version using FRESH elements from current screen
-            # CRITICAL: Use fresh elements, not stale cache
-            elements_snapshot = [
-                element.copy() for element in current_elements if isinstance(element, dict)
-            ]
-            annotated_bytes = self.create_annotated_screenshot(screenshot_bytes, elements_snapshot)
-
-            # CRITICAL: Save the EXACT annotated screenshot that will be sent to the LLM
-            if self.screenshot_save_dir:
-                self.screenshot_counter += 1
-                from datetime import datetime
-
-                timestamp = time.time()
-                dt = datetime.fromtimestamp(timestamp)
-                # Save as LLM screenshot - this is the EXACT bytes shown to LLM
-                filename = f"{self.screenshot_counter:04d}_{dt.strftime('%Y%m%d_%H%M%S_%f')}_llm_screenshot.png"
-                filepath = os.path.join(self.screenshot_save_dir, filename)
-
-                try:
-                    with open(filepath, "wb") as f:
-                        f.write(annotated_bytes)
-                    logger.info(f"🎯 EXACT LLM screenshot saved to: {filepath}")
-
-                    # ALSO save the elements snapshot used for this screenshot
-                    elements_file = filepath.replace("_llm_screenshot.png", "_elements.json")
-                    with open(elements_file, "w") as f:
-                        json.dump(elements_snapshot, f, indent=2)
-                    logger.info(f"🎯 Elements snapshot saved to: {elements_file}")
-
-                except Exception as e:
-                    logger.error(f"CRITICAL: Failed to save LLM screenshot to {filepath}: {e}")
-            else:
-                logger.error(
-                    "CRITICAL: No screenshot save directory set - cannot save LLM screenshot!"
-                )
-
-            return (screenshot_result[0], annotated_bytes)
-
-        except Exception as e:
-            logger.error(f"Error taking annotated screenshot: {e}")
-            # No fallback - raise the error instead of taking plain screenshots
-            raise e
-
-    async def list_packages(self, include_system_apps: bool = False) -> List[str]:
+    def list_packages(self, include_system_apps: bool = False) -> List[str]:
         """
         List installed packages on the device.
 
@@ -946,163 +697,12 @@ class AdbTools(Tools):
             List of package names
         """
         try:
-            if self.serial:
-                device = await self.device_manager.get_device(self.serial)
-                if not device:
-                    raise ValueError(f"Device {self.serial} not found")
-            else:
-                device = await self.get_device()
-
-            # Use the direct ADB command to get packages with paths
-            cmd = ["pm", "list", "packages", "-f"]
-            if not include_system_apps:
-                cmd.append("-3")
-
-            output = await device._adb.shell(device._serial, " ".join(cmd))
-
-            # Parse the package list using the function
-            packages = self.parse_package_list(output)
-            # Format package list for better readability
-            package_list = [pack["package"] for pack in packages]
-            for package in package_list:
-                print(package)
-            return package_list
+            logger.debug("Listing packages")
+            return self.device.list_packages(["-3"] if not include_system_apps else [])
         except ValueError as e:
             raise ValueError(f"Error listing packages: {str(e)}")
 
-    async def extract(self, filename: Optional[str] = None) -> str:
-        """Extract and save the current UI state to a JSON file.
-
-        This function captures the current UI state including all UI elements
-        and saves it to a JSON file for later analysis or reference.
-
-        Args:
-            filename: Optional filename to save the UI state (defaults to ui_state_TIMESTAMP.json)
-
-        Returns:
-            Path to the saved JSON file
-        """
-        try:
-            # Generate default filename if not provided
-            if not filename:
-                timestamp = int(time.time())
-                filename = f"ui_state_{timestamp}.json"
-
-            # Ensure the filename ends with .json
-            if not filename.endswith(".json"):
-                filename += ".json"
-
-            # Get the UI elements
-            ui_elements = await self.get_all_elements(self.serial)
-
-            # Save to file
-            save_path = os.path.abspath(filename)
-            async with aiofiles.open(save_path, "w", encoding="utf-8") as f:
-                await f.write(json.dumps(ui_elements, indent=2))
-
-            return f"UI state extracted and saved to {save_path}"
-
-        except Exception as e:
-            return f"Error extracting UI state: {e}"
-
-    async def get_all_elements(self) -> Dict[str, Any]:
-        """
-        Get all UI elements from the device, including non-interactive elements.
-
-        This function interacts with the TopViewService app installed on the device
-        to capture all UI elements, even those that are not interactive. This provides
-        a complete view of the UI hierarchy for analysis or debugging purposes.
-
-        Returns:
-            Dictionary containing all UI elements extracted from the device screen
-        """
-        try:
-            # Get the device
-            device = await self.device_manager.get_device(self.serial)
-            if not device:
-                raise ValueError(f"Device {self.serial} not found")
-
-            # Create a temporary file for the JSON
-            with tempfile.NamedTemporaryFile(suffix=".json") as temp:
-                local_path = temp.name
-
-                try:
-                    # Clear logcat to make it easier to find our output
-                    await device._adb.shell(device._serial, "logcat -c")
-
-                    # Trigger the custom service via broadcast to get ALL elements
-                    await device._adb.shell(
-                        device._serial,
-                        "am broadcast -a com.droidrun.portal.GET_ALL_ELEMENTS",
-                    )
-
-                    # Poll for the JSON file path
-                    start_time = asyncio.get_event_loop().time()
-                    max_wait_time = 10  # Maximum wait time in seconds
-                    poll_interval = 0.2  # Check every 200ms
-
-                    device_path = None
-                    while asyncio.get_event_loop().time() - start_time < max_wait_time:
-                        # Check logcat for the file path
-                        logcat_output = await device._adb.shell(
-                            device._serial,
-                            'logcat -d | grep "DROIDRUN_FILE" | grep "JSON data written to" | tail -1',
-                        )
-
-                        # Parse the file path if present
-                        match = re.search(r"JSON data written to: (.*)", logcat_output)
-                        if match:
-                            device_path = match.group(1).strip()
-                            break
-
-                        # Wait before polling again
-                        await asyncio.sleep(poll_interval)
-
-                    # Check if we found the file path
-                    if not device_path:
-                        raise ValueError(
-                            f"Failed to find the JSON file path in logcat after {max_wait_time} seconds"
-                        )
-
-                    logger.debug(f"Pulling file from {device_path} to {local_path}")
-                    # Pull the JSON file from the device
-                    await device._adb.pull_file(device._serial, device_path, local_path)
-
-                    # Read the JSON file
-                    async with aiofiles.open(local_path, "r", encoding="utf-8") as f:
-                        json_content = await f.read()
-
-                    # Clean up the temporary file
-                    with contextlib.suppress(OSError):
-                        os.unlink(local_path)
-
-                    # Try to parse the JSON
-                    import json
-
-                    try:
-                        ui_data = json.loads(json_content)
-
-                        return {
-                            "all_elements": ui_data,
-                            "count": (
-                                len(ui_data)
-                                if isinstance(ui_data, list)
-                                else sum(1 for _ in ui_data.get("elements", []))
-                            ),
-                            "message": "Retrieved all UI elements from the device screen",
-                        }
-                    except json.JSONDecodeError:
-                        raise ValueError("Failed to parse UI elements JSON data")
-
-                except Exception as e:
-                    # Clean up in case of error
-                    with contextlib.suppress(OSError):
-                        os.unlink(local_path)
-                    raise ValueError(f"Error retrieving all UI elements: {e}")
-
-        except Exception as e:
-            raise ValueError(f"Error getting all UI elements: {e}")
-
+    @Tools.ui_action
     def complete(self, success: bool, reason: str = ""):
         """
         Mark the task as finished.
@@ -1122,7 +722,7 @@ class AdbTools(Tools):
             self.reason = reason
             self.finished = True
 
-    async def remember(self, information: str) -> str:
+    def remember(self, information: str) -> str:
         """
         Store important information to remember for future context.
 
@@ -1158,7 +758,7 @@ class AdbTools(Tools):
         """
         return self.memory.copy()
 
-    async def get_state(self, serial: Optional[str] = None) -> Dict[str, Any]:
+    def get_state(self, serial: Optional[str] = None) -> Dict[str, Any]:
         """
         Get both the a11y tree and phone state in a single call using the combined /state endpoint.
 
@@ -1170,183 +770,274 @@ class AdbTools(Tools):
         """
 
         try:
-            if serial:
-                device = await self.device_manager.get_device(serial)
-                if not device:
-                    raise ValueError(f"Device {serial} not found")
+            logger.debug("Getting state")
+
+            if self.use_tcp and self.tcp_forwarded:
+                # Use TCP communication
+                response = requests.get(f"{self.tcp_base_url}/state", timeout=10)
+
+                if response.status_code == 200:
+                    tcp_response = response.json()
+
+                    # Check if response has the expected format
+                    if isinstance(tcp_response, dict) and "data" in tcp_response:
+                        data_str = tcp_response["data"]
+                        try:
+                            combined_data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            return {
+                                "error": "Parse Error",
+                                "message": "Failed to parse JSON data from TCP response data field",
+                            }
+                    else:
+                        # Fallback: assume direct JSON format
+                        combined_data = tcp_response
+                else:
+                    return {
+                        "error": "HTTP Error",
+                        "message": f"HTTP request failed with status {response.status_code}",
+                    }
             else:
-                device = await self.get_device()
+                # Fallback to content provider method
+                adb_output = self.device.shell(
+                    "content query --uri content://com.jeeves/state",
+                )
 
-            return await self.get_state_direct(serial)
+                state_data = self._parse_content_provider_output(adb_output)
 
+                if state_data is None:
+                    return {
+                        "error": "Parse Error",
+                        "message": "Failed to parse state data from ContentProvider response",
+                    }
+
+                if isinstance(state_data, dict):
+                    data_str = None
+                    if "data" in state_data:
+                        data_str = state_data["data"]
+                    elif "message" in state_data:
+                        data_str = state_data["message"]
+
+                    if data_str:
+                        try:
+                            combined_data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            return {
+                                "error": "Parse Error",
+                                "message": "Failed to parse JSON data from ContentProvider response",
+                            }
+                    else:
+                        return {
+                            "error": "Format Error",
+                            "message": "Neither 'data' nor 'message' field found in ContentProvider response",
+                        }
+                else:
+                    return {
+                        "error": "Format Error",
+                        "message": f"Unexpected state data format: {type(state_data)}",
+                    }
+
+            # Validate that both a11y_tree and phone_state are present
+            if "a11y_tree" not in combined_data:
+                return {
+                    "error": "Missing Data",
+                    "message": "a11y_tree not found in combined state data",
+                }
+
+            if "phone_state" not in combined_data:
+                return {
+                    "error": "Missing Data",
+                    "message": "phone_state not found in combined state data",
+                }
+
+            # Filter out the "type" attribute from all a11y_tree elements
+            elements = combined_data["a11y_tree"]
+            filtered_elements = []
+            for element in elements:
+                # Create a copy of the element without the "type" attribute
+                filtered_element = {k: v for k, v in element.items() if k != "type"}
+
+                # Also filter children if present
+                if "children" in filtered_element:
+                    filtered_element["children"] = [
+                        {k: v for k, v in child.items() if k != "type"}
+                        for child in filtered_element["children"]
+                    ]
+
+                filtered_elements.append(filtered_element)
+
+            self.clickable_elements_cache = filtered_elements
+
+            return {
+                "a11y_tree": filtered_elements,
+                "phone_state": combined_data["phone_state"],
+            }
+
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": "TCP Error",
+                "message": f"TCP request failed: {str(e)}",
+            }
         except Exception as e:
             return {
                 "error": str(e),
                 "message": f"Error getting combined state: {str(e)}",
             }
 
-    def _parse_ui_elements(self, node, global_index_counter=[0]) -> List[Dict[str, Any]]:
-        """Parse XML UI hierarchy into accessibility tree format with globally unique indices."""
-        elements = []
-
-        # Convert XML node to accessibility element format
-        bounds_str = node.attrib.get("bounds", "[0,0][0,0]")
-        # Parse bounds format: [x1,y1][x2,y2] -> (x1, y1, x2, y2)
-        import re
-
-        bounds_match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_str)
-        if bounds_match:
-            x1, y1, x2, y2 = map(int, bounds_match.groups())
-            bounds = (x1, y1, x2, y2)
-        else:
-            bounds = (0, 0, 0, 0)
-
-        element = {
-            "class": node.attrib.get("class", ""),
-            "package": node.attrib.get("package", ""),
-            "content-desc": node.attrib.get("content-desc", ""),
-            "text": node.attrib.get("text", ""),
-            "resource-id": node.attrib.get("resource-id", ""),
-            "checkable": node.attrib.get("checkable", "false") == "true",
-            "checked": node.attrib.get("checked", "false") == "true",
-            "clickable": node.attrib.get("clickable", "false") == "true",
-            "enabled": node.attrib.get("enabled", "true") == "true",
-            "focusable": node.attrib.get("focusable", "false") == "true",
-            "focused": node.attrib.get("focused", "false") == "true",
-            "scrollable": node.attrib.get("scrollable", "false") == "true",
-            "long-clickable": node.attrib.get("long-clickable", "false") == "true",
-            "password": node.attrib.get("password", "false") == "true",
-            "selected": node.attrib.get("selected", "false") == "true",
-            "bounds": f"{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}",
-        }
-
-        # Only include elements that meet visibility criteria
-        if (
-            element["enabled"]
-            and bounds[0] < bounds[2]
-            and bounds[1] < bounds[3]  # Valid bounds
-            and (element["clickable"] or element["text"] or element["content-desc"])
-        ):
-            # Assign globally unique index using counter
-            element["index"] = global_index_counter[0]
-            global_index_counter[0] += 1
-            elements.append(element)
-
-        # Process child nodes recursively
-        for child in node:
-            elements.extend(self._parse_ui_elements(child, global_index_counter))
-
-        return elements
-
-    # CHANGED: Updated start_recording method
-    async def start_recording(
-        self,
-        dpath: os.PathLike,
-        output_filename: str = "recording.mp4",
-        bit_rate_mbps: int = 8,
-        max_file_size_mb: int = 400,
-    ) -> str:
+    def ping(self) -> Dict[str, Any]:
         """
-        Start a screen recording, saving it to the task-specific directory.
-
-        Args:
-            dpath: The directory path on the HOST for the current task's results.
-            output_filename: The name of the video file.
+        Test the TCP connection using the /ping endpoint.
 
         Returns:
-            A confirmation message or an error string.
+            Dictionary with ping result
         """
-        if self.recording_process:
-            return "Error: A recording is already in progress."
-
-        # --- Calculate time limit from file size and bit rate ---
-        # (Size in Megabytes * 8 bits_per_byte) / Megabits_per_second = Duration in seconds
-        # This prevents the recording from exceeding the specified file size.
-        max_duration_seconds = math.ceil((max_file_size_mb * 8) / bit_rate_mbps)
-
-        # --- Path Translation Logic (remains the same) ---
-        abs_dpath_host = os.path.abspath(dpath)
-        if not abs_dpath_host.startswith(self.host_volume_path):
-            return (
-                f"Error: The provided path '{dpath}' is not inside the configured host volume "
-                f"path '{self.host_volume_path}'."
-            )
-
-        container_dpath = abs_dpath_host.replace(
-            self.host_volume_path, self.container_mount_path, 1
-        )
-        container_recording_path = os.path.join(container_dpath, output_filename)
-        self.recording_host_path = os.path.join(abs_dpath_host, output_filename)
-
         try:
-            # Get the directory part of the path and create it, including parents
-            output_dir = os.path.dirname(container_recording_path)
-            os.makedirs(output_dir, exist_ok=True)
-            logger.debug(f"Ensured recording directory exists: {output_dir}")
-        except OSError as e:
-            return f"Error creating directory for recording: {e}"
+            if self.use_tcp and self.tcp_forwarded:
+                response = requests.get(f"{self.tcp_base_url}/ping", timeout=5)
 
-        serial = self.get_device_serial()
-        logger.info(f"Serial: {serial}")
-        logger.info(f"Path: {container_recording_path}")
-        logger.info(f"Bitrate: {bit_rate_mbps}")
-        logger.info(f"Max Duration: {max_duration_seconds}")
-        cmd = (
-            f"scrcpy --serial {serial} "
-            f"--record '{container_recording_path}' "
-            f"--video-bit-rate {bit_rate_mbps}M "  # Set the bit rate
-            f"--no-audio "  # Need this because the docker container version of the emulator doesn't have mic support
-            f"--no-playback "
-            f"--time-limit {max_duration_seconds} "  # Set the calculated time limit
-            f"--show-touches"
-        )
-        logger.info(f"Attempting to run this command {cmd}")
+                if response.status_code == 200:
+                    try:
+                        tcp_response = response.json() if response.content else {}
+                        logger.debug(f"Ping TCP response: {tcp_response}")
+                        return {
+                            "status": "success",
+                            "message": "Ping successful",
+                            "response": tcp_response,
+                        }
+                    except json.JSONDecodeError:
+                        return {
+                            "status": "success",
+                            "message": "Ping successful (non-JSON response)",
+                            "response": response.text,
+                        }
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"Ping failed with status {response.status_code}: {response.text}",
+                    }
+            else:
+                return {
+                    "status": "error",
+                    "message": "TCP communication is not enabled",
+                }
 
-        try:
-            # Use shlex.split to parse the command and exec to run it directly
-            self.recording_process = await asyncio.create_subprocess_exec(*shlex.split(cmd))
-            logger.info(
-                f"Started recording for device {serial}. Saving to {self.recording_host_path}"
-            )
-            return "Recording started."
+        except requests.exceptions.RequestException as e:
+            return {
+                "status": "error",
+                "message": f"Ping failed: {str(e)}",
+            }
         except Exception as e:
-            logger.error(f"Failed to start recording process: {e}")
-            return f"Error: Failed to start recording process: {e}"
+            return {
+                "status": "error",
+                "message": f"Error during ping: {str(e)}",
+            }
 
-    # CHANGED: Updated stop_recording method to use the host path in its message
-    async def stop_recording(self) -> str:
-        """Stops the current screen recording."""
-        if not self.recording_process:
-            return "Error: No recording is currently in progress."
 
-        # Check if the process has already terminated
-        if self.recording_process.returncode is None:
-            # The process is still running, so we need to stop it.
-            try:
-                self.recording_process.send_signal(signal.SIGINT)
-                await self.recording_process.wait()
-                logger.info("Gracefully stopped recording process.")
-            except ProcessLookupError:
-                # Handle the rare case where the process terminates right after our check
-                logger.warning("Recording process not found, it likely terminated on its own.")
-            except Exception as e:
-                logger.error(f"Failed to stop running recording process: {e}")
-                return f"Error: Failed to stop recording: {e}"
-        else:
-            # The process had already finished.
-            logger.info(
-                f"Recording process already terminated with code: {self.recording_process.returncode}"
-            )
+def _shell_test_cli(serial: str, command: str) -> tuple[str, float]:
+    """
+    Run an adb shell command using the adb CLI and measure execution time.
+    Args:
+        serial: Device serial number
+        command: Shell command to run
+    Returns:
+        Tuple of (output, elapsed_time)
+    """
+    import time
+    import subprocess
 
-        self.recording_process = None
-        final_message = f"Recording stopped. Video saved to {self.recording_host_path}"
-        logger.info(final_message)
-        return final_message
+    adb_cmd = ["adb", "-s", serial, "shell", command]
+    start = time.perf_counter()
+    result = subprocess.run(adb_cmd, capture_output=True, text=True)
+    elapsed = time.perf_counter() - start
+    output = result.stdout.strip() if result.returncode == 0 else result.stderr.strip()
+    return output, elapsed
+
+
+def _shell_test():
+    device = adb.device("emulator-5554")
+    # Native Python adb client
+    start = time.time()
+    res = device.shell("echo 'Hello, World!'")
+    end = time.time()
+    print(f"[Native] Shell execution took {end - start:.3f} seconds: {res}")
+
+    start = time.time()
+    res = device.shell("content query --uri content://com.jeeves/state")
+    end = time.time()
+    print(f"[Native] Shell execution took {end - start:.3f} seconds: phone_state")
+
+    # CLI version
+    output, elapsed = _shell_test_cli("emulator-5554", "echo 'Hello, World!'")
+    print(f"[CLI] Shell execution took {elapsed:.3f} seconds: {output}")
+
+    output, elapsed = _shell_test_cli(
+        "emulator-5554", "content query --uri content://com.jeeves/state"
+    )
+    print(f"[CLI] Shell execution took {elapsed:.3f} seconds: phone_state")
+
+
+def _list_packages():
+    tools = AdbTools()
+    print(tools.list_packages())
+
+
+def _start_app():
+    tools = AdbTools()
+    tools.start_app("com.android.settings", ".Settings")
+
+
+def _shell_test_cli(serial: str, command: str) -> tuple[str, float]:
+    """
+    Run an adb shell command using the adb CLI and measure execution time.
+    Args:
+        serial: Device serial number
+        command: Shell command to run
+    Returns:
+        Tuple of (output, elapsed_time)
+    """
+    import time
+    import subprocess
+
+    adb_cmd = ["adb", "-s", serial, "shell", command]
+    start = time.perf_counter()
+    result = subprocess.run(adb_cmd, capture_output=True, text=True)
+    elapsed = time.perf_counter() - start
+    output = result.stdout.strip() if result.returncode == 0 else result.stderr.strip()
+    return output, elapsed
+
+
+def _shell_test():
+    device = adb.device("emulator-5554")
+    # Native Python adb client
+    start = time.time()
+    res = device.shell("echo 'Hello, World!'")
+    end = time.time()
+    print(f"[Native] Shell execution took {end - start:.3f} seconds: {res}")
+
+    start = time.time()
+    res = device.shell("content query --uri content://com.jeeves/state")
+    end = time.time()
+    print(f"[Native] Shell execution took {end - start:.3f} seconds: phone_state")
+
+    # CLI version
+    output, elapsed = _shell_test_cli("emulator-5554", "echo 'Hello, World!'")
+    print(f"[CLI] Shell execution took {elapsed:.3f} seconds: {output}")
+
+    output, elapsed = _shell_test_cli(
+        "emulator-5554", "content query --uri content://com.jeeves/state"
+    )
+    print(f"[CLI] Shell execution took {elapsed:.3f} seconds: phone_state")
+
+
+def _list_packages():
+    tools = AdbTools()
+    print(tools.list_packages())
+
+
+def _start_app():
+    tools = AdbTools()
+    tools.start_app("com.android.settings", ".Settings")
 
 
 if __name__ == "__main__":
-
-    async def main():
-        tools = AdbTools()
-
-    asyncio.run(main())
+    _start_app()

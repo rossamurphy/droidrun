@@ -16,23 +16,24 @@ from PIL import Image
 
 logger = logging.getLogger("droidrun")
 
-class Trajectory:
 
+class Trajectory:
     def __init__(self):
         """Initializes an empty trajectory class."""
         self.events: List[Event] = []
         self.screenshots: List[Any] = []  # Store screenshot data
 
-
-    def create_screenshot_gif(self, output_path: str, screenshots: list[dict[str, Any]], duration: int = 1500) -> str:
+    def create_screenshot_gif(
+        self, output_path: str, screenshots: list[dict[str, Any]], duration: int = 1500
+    ) -> str:
         """
         Create a GIF from a list of screenshots.
-        
+
         Args:
             output_path: Base path for the GIF (without extension)
             screenshots: List of screenshot dictionaries.
             duration: Duration for each frame in milliseconds
-        
+
         Returns:
             Path to the created GIF file
         """
@@ -40,7 +41,7 @@ class Trajectory:
         images = []
         for screenshot in screenshots:
             screenshot_dict = screenshot
-            bytes_data = screenshot_dict.get('image_data', None)
+            bytes_data = screenshot_dict.get("image_data", None)
             if bytes_data is None:
                 pass
             else:
@@ -49,26 +50,18 @@ class Trajectory:
 
         # Save as GIF
         images[0].save(
-            output_path,
-            save_all=True,
-            append_images=images[1:],
-            duration=duration,
-            loop=0
+            output_path, save_all=True, append_images=images[1:], duration=duration, loop=0
         )
 
         return output_path
 
-    def save_trajectory(
-        self,
-        directory: os.PathLike,
-        screenshots: list[bytes] = None
-    ) -> str:
+    def save_trajectory(self, directory: os.PathLike, screenshots: list[bytes] = None) -> str:
         """
         Save trajectory steps to a JSON file and create a GIF of screenshots if available.
-        
+
         Args:
             directory: Directory to save the trajectory files
-        
+
         Returns:
             Path to the saved trajectory file
         """
@@ -95,8 +88,11 @@ class Trajectory:
                 return [make_serializable(item) for item in obj]
             elif hasattr(obj, "__dict__"):
                 # Handle other custom objects by converting to dict
-                return {k: make_serializable(v) for k, v in obj.__dict__.items()
-                       if not k.startswith('_')}
+                return {
+                    k: make_serializable(v)
+                    for k, v in obj.__dict__.items()
+                    if not k.startswith("_")
+                }
             else:
                 return obj
 
@@ -104,27 +100,30 @@ class Trajectory:
         for event in self.events:
             event_dict = {
                 "type": event.__class__.__name__,
-                **{k: make_serializable(v) for k, v in event.__dict__.items()
-                   if not k.startswith('_')}
+                **{
+                    k: make_serializable(v)
+                    for k, v in event.__dict__.items()
+                    if not k.startswith("_")
+                },
             }
             serializable_events.append(event_dict)
 
-        json_path = os.path.join(directory,"trajectory.json")
+        json_path = os.path.join(directory, "trajectory.json")
         with open(json_path, "w") as f:
             json.dump(serializable_events, f, indent=2)
 
         if screenshots:
-            self.create_screenshot_gif(os.path.join(directory,"video.gif"), screenshots)
+            self.create_screenshot_gif(os.path.join(directory, "video.gif"), screenshots)
 
         return json_path
 
     def get_trajectory_statistics(trajectory_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Get statistics about a trajectory.
-        
+
         Args:
             trajectory_data: The trajectory data dictionary
-            
+
         Returns:
             Dictionary with statistics about the trajectory
         """
@@ -137,18 +136,24 @@ class Trajectory:
             step_types[step_type] = step_types.get(step_type, 0) + 1
 
         # Count planning vs execution steps
-        planning_steps = sum(count for step_type, count in step_types.items()
-                            if step_type.startswith("planner_"))
-        execution_steps = sum(count for step_type, count in step_types.items()
-                            if step_type.startswith("codeact_"))
+        planning_steps = sum(
+            count for step_type, count in step_types.items() if step_type.startswith("planner_")
+        )
+        execution_steps = sum(
+            count for step_type, count in step_types.items() if step_type.startswith("codeact_")
+        )
 
         # Count successful vs failed executions
-        successful_executions = sum(1 for step in trajectory_steps
-                                if step.get("type") == "codeact_execution"
-                                and step.get("success", False))
-        failed_executions = sum(1 for step in trajectory_steps
-                            if step.get("type") == "codeact_execution"
-                            and not step.get("success", True))
+        successful_executions = sum(
+            1
+            for step in trajectory_steps
+            if step.get("type") == "codeact_execution" and step.get("success", False)
+        )
+        failed_executions = sum(
+            1
+            for step in trajectory_steps
+            if step.get("type") == "codeact_execution" and not step.get("success", True)
+        )
 
         # Return statistics
         return {
@@ -158,13 +163,13 @@ class Trajectory:
             "execution_steps": execution_steps,
             "successful_executions": successful_executions,
             "failed_executions": failed_executions,
-            "goal_achieved": trajectory_data.get("success", False)
+            "goal_achieved": trajectory_data.get("success", False),
         }
 
     def print_trajectory_summary(self, trajectory_data: Dict[str, Any]) -> None:
         """
         Print a summary of a trajectory.
-        
+
         Args:
             trajectory_data: The trajectory data dictionary
         """
@@ -176,7 +181,7 @@ class Trajectory:
         print(f"Reason: {trajectory_data.get('reason', 'Unknown')}")
         print(f"Total steps: {stats['total_steps']}")
         print("Step breakdown:")
-        for step_type, count in stats['step_types'].items():
+        for step_type, count in stats["step_types"].items():
             print(f"  - {step_type}: {count}")
         print(f"Planning steps: {stats['planning_steps']}")
         print(f"Execution steps: {stats['execution_steps']}")

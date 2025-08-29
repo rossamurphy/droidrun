@@ -1,31 +1,26 @@
-import io
-import json
-import logging
-from typing import Optional
-
-from llama_index.core.base.llms.types import ChatMessage
 from llama_index.core.llms.llm import LLM
-from PIL import Image, ImageDraw, ImageFont
-
 from droidrun.agent.context import EpisodicMemory
-from droidrun.agent.context.agent_persona import AgentPersona
 from droidrun.agent.context.reflection import Reflection
+from llama_index.core.base.llms.types import ChatMessage, ImageBlock
 from droidrun.agent.utils.chat_utils import add_screenshot_image_block
+from droidrun.agent.context.agent_persona import AgentPersona
+import json
+from typing import Dict, Any, List, Optional
+import logging
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 logger = logging.getLogger("droidrun")
 
+
 class Reflector:
-    def __init__(
-        self,
-        llm: LLM,
-        debug: bool = False,
-        *args,
-        **kwargs
-    ):
+    def __init__(self, llm: LLM, debug: bool = False, *args, **kwargs):
         self.llm = llm
         self.debug = debug
 
-    async def reflect_on_episodic_memory(self, episodic_memory: EpisodicMemory, goal: str) -> Reflection:
+    async def reflect_on_episodic_memory(
+        self, episodic_memory: EpisodicMemory, goal: str
+    ) -> Reflection:
         """Analyze episodic memory and provide reflection on the agent's performance."""
         system_prompt_content = self._create_system_prompt()
         system_prompt = ChatMessage(role="system", content=system_prompt_content)
@@ -45,7 +40,9 @@ class Reflector:
         if screenshots_grid:
             # Use the add_screenshot_image_block function to properly add the image
             messages_list = [system_prompt, user_message]
-            messages_list = await add_screenshot_image_block(screenshots_grid, messages_list, copy=False)
+            messages_list = await add_screenshot_image_block(
+                screenshots_grid, messages_list, copy=False
+            )
             messages = messages_list
         else:
             messages = [system_prompt, user_message]
@@ -58,12 +55,12 @@ class Reflector:
             content = response.message.content.strip()
 
             # Remove markdown code block formatting if present
-            if content.startswith('```json'):
+            if content.startswith("```json"):
                 content = content[7:]  # Remove ```json
-            elif content.startswith('```'):
-                content = content[3:]   # Remove ```
+            elif content.startswith("```"):
+                content = content[3:]  # Remove ```
 
-            if content.endswith('```'):
+            if content.endswith("```"):
                 content = content[:-3]  # Remove trailing ```
 
             content = content.strip()
@@ -112,7 +109,7 @@ class Reflector:
         # Create the grid image with space for header bars
         grid_width = cols * cell_width
         grid_height = rows * (cell_height + header_height)
-        grid_image = Image.new('RGB', (grid_width, grid_height), color='white')
+        grid_image = Image.new("RGB", (grid_width, grid_height), color="white")
 
         # Set up font for step text
         draw = ImageDraw.Draw(grid_image)
@@ -134,10 +131,10 @@ class Reflector:
 
             # Create header bar
             header_rect = [x, header_y, x + cell_width, header_y + header_height]
-            draw.rectangle(header_rect, fill='#2c3e50')  # Dark blue header
+            draw.rectangle(header_rect, fill="#2c3e50")  # Dark blue header
 
             # Draw step text in header bar
-            text = f"Step {i+1}"
+            text = f"Step {i + 1}"
             # Get text dimensions for centering
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
@@ -147,10 +144,12 @@ class Reflector:
             text_x = x + (cell_width - text_width) // 2
             text_y = header_y + (header_height - text_height) // 2
 
-            draw.text((text_x, text_y), text, fill='white', font=font)
+            draw.text((text_x, text_y), text, fill="white", font=font)
 
             # Resize and place screenshot below header
-            resized_screenshot = screenshot.resize((cell_width, cell_height), Image.Resampling.LANCZOS)
+            resized_screenshot = screenshot.resize(
+                (cell_width, cell_height), Image.Resampling.LANCZOS
+            )
             grid_image.paste(resized_screenshot, (x, screenshot_y))
 
         # Save grid to disk for debugging (only if debug flag is enabled)
@@ -170,7 +169,7 @@ class Reflector:
 
         # Convert to bytes for use with add_screenshot_image_block
         buffer = io.BytesIO()
-        grid_image.save(buffer, format='PNG')
+        grid_image.save(buffer, format="PNG")
         buffer.seek(0)
 
         return buffer.getvalue()
@@ -232,8 +231,8 @@ class Reflector:
         persona_content = f"""ACTOR AGENT PERSONA:
         - Name: {persona.name}
         - Description: {persona.description}
-        - Available Tools: {', '.join(persona.allowed_tools)}
-        - Expertise Areas: {', '.join(persona.expertise_areas)}
+        - Available Tools: {", ".join(persona.allowed_tools)}
+        - Expertise Areas: {", ".join(persona.expertise_areas)}
         - System Prompt: {persona.system_prompt}"""
 
         return persona_content
@@ -247,7 +246,6 @@ class Reflector:
                 # Parse the JSON strings to get the original content without escape characters
                 chat_history = json.loads(step.chat_history)
                 response = json.loads(step.response)
-
 
                 formatted_step = f"""Step {i}:
             Chat History: {json.dumps(chat_history, indent=2)}

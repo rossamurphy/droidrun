@@ -1,31 +1,32 @@
-import asyncio
-import logging
-from typing import TYPE_CHECKING, List, Union
-
-from dotenv import load_dotenv
-from llama_index.core.base.llms.types import ChatMessage, ChatResponse
-from llama_index.core.llms.llm import LLM
-from llama_index.core.memory import Memory
-from llama_index.core.prompts import PromptTemplate
-from llama_index.core.workflow import Context, StartEvent, StopEvent, Workflow, step
-
-from droidrun.agent.common.events import ScreenshotEvent
-from droidrun.agent.context.agent_persona import AgentPersona
-from droidrun.agent.context.reflection import Reflection
-from droidrun.agent.context.task_manager import TaskManager
 from droidrun.agent.planner.events import *
-from droidrun.agent.planner.events import (
-    PlanCreatedEvent,
-    PlanInputEvent,
-    PlanThinkingEvent,
-)
 from droidrun.agent.planner.prompts import (
     DEFAULT_PLANNER_SYSTEM_PROMPT,
     DEFAULT_PLANNER_USER_PROMPT,
 )
-from droidrun.agent.utils import chat_utils
+import logging
+import asyncio
+from typing import List, TYPE_CHECKING, Union
+import inspect
+from llama_index.core.base.llms.types import ChatMessage, ChatResponse
+from llama_index.core.prompts import PromptTemplate
+from llama_index.core.llms.llm import LLM
+from llama_index.core.workflow import Workflow, StartEvent, StopEvent, Context, step
+from llama_index.core.memory import Memory
+from llama_index.core.llms.llm import LLM
 from droidrun.agent.utils.executer import SimpleCodeExecutor
+from droidrun.agent.utils import chat_utils
+from droidrun.agent.context.task_manager import TaskManager
 from droidrun.tools import Tools
+from droidrun.agent.common.events import ScreenshotEvent, RecordUIStateEvent
+from droidrun.agent.planner.events import (
+    PlanInputEvent,
+    PlanCreatedEvent,
+    PlanThinkingEvent,
+)
+from droidrun.agent.context.agent_persona import AgentPersona
+from droidrun.agent.context.reflection import Reflection
+
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -82,16 +83,8 @@ class PlannerAgent(Workflow):
             agents=chat_utils.parse_persona_description(self.personas),
         )
         self.user_prompt = user_prompt or DEFAULT_PLANNER_USER_PROMPT.format(goal=goal)
-        self.system_message = ChatMessage(
-            role="system",
-            content=self.system_prompt,
-            additional_kwargs={"cache_control": {"type": "ephemeral"}},
-        )
-        self.user_message = ChatMessage(
-            role="user",
-            content=self.user_prompt,
-            additional_kwargs={"cache_control": {"type": "ephemeral"}},
-        )
+        self.system_message = ChatMessage(role="system", content=self.system_prompt)
+        self.user_message = ChatMessage(role="user", content=self.user_prompt)
 
         self.executer = SimpleCodeExecutor(
             loop=asyncio.get_event_loop(), globals={}, locals={}, tools=self.tool_list
@@ -138,21 +131,22 @@ class PlannerAgent(Workflow):
         ctx.write_event_to_stream(ev)
 
         self.steps_counter += 1
-        logger.info("🧠 Thinking about how to plan the goal...")
+        logger.info(f"🧠 Thinking about how to plan the goal...")
 
+        # if vision is disabled, screenshot should save to trajectory
+        screenshot = (self.tools_instance.take_screenshot())[1]
+        ctx.write_event_to_stream(ScreenshotEvent(screenshot=screenshot))
         if self.vision:
-            screenshot = (await self.tools_instance.take_annotated_screenshot())[1]
-            ctx.write_event_to_stream(ScreenshotEvent(screenshot=screenshot))
             await ctx.set("screenshot", screenshot)
 
         try:
-            state = await self.tools_instance.get_state()
+            state = self.tools_instance.get_state()
             await ctx.set("ui_state", state["a11y_tree"])
             await ctx.set("phone_state", state["phone_state"])
+            ctx.write_event_to_stream(RecordUIStateEvent(ui_state=state["a11y_tree"]))
         except Exception as e:
-            logger.warning(f"Exception Raised: {e}")
             logger.warning(
-                "⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
+                f"⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
             )
 
         await ctx.set("remembered_info", self.remembered_info)
@@ -179,11 +173,23 @@ class PlannerAgent(Workflow):
         if code:
             try:
                 result = await self.executer.execute(ctx, code)
-                logger.info("📝 Planning complete")
-                logger.debug(f"  - Planning code executed. Result: {result}")
+                logger.info(f"📝 Planning complete")
+                logger.debug(f"  - Planning code executed. Result: {result['output']}")
+
+                screenshots = result["screenshots"]
+                for screenshot in screenshots[
+                    :-1
+                ]:  # the last screenshot will be captured by next step
+                    ctx.write_event_to_stream(ScreenshotEvent(screenshot=screenshot))
+
+                ui_states = result["ui_states"]
+                for ui_state in ui_states[:-1]:
+                    ctx.write_event_to_stream(RecordUIStateEvent(ui_state=ui_state["a11y_tree"]))
 
                 await self.chat_memory.aput(
-                    ChatMessage(role="user", content=f"Execution Result:\n```\n{result}\n```")
+                    ChatMessage(
+                        role="user", content=f"Execution Result:\n```\n{result['output']}\n```"
+                    )
                 )
 
                 self.remembered_info = self.tools_instance.memory
@@ -251,17 +257,20 @@ wrap your code inside this:
             logger.debug(f"  - Sending {len(chat_history)} messages to LLM.")
 
             model = self.llm.class_name()
-            if model == "DeepSeek":
-                logger.warning("[yellow]DeepSeek doesnt support images. Disabling screenshots[/]")
-
-            elif self.vision == True:
-                chat_history = await chat_utils.add_screenshot_image_block(
-                    await ctx.get("screenshot"), chat_history
-                )
+            if self.vision == True:
+                if model == "DeepSeek":
+                    logger.warning(
+                        "[yellow]DeepSeek doesnt support images. Disabling screenshots[/]"
+                    )
+                else:
+                    chat_history = await chat_utils.add_screenshot_image_block(
+                        await ctx.get("screenshot"), chat_history
+                    )
 
             chat_history = await chat_utils.add_task_history_block(
-                self.task_manager.get_completed_tasks(),
-                self.task_manager.get_failed_tasks(),
+                # self.task_manager.get_completed_tasks(),
+                # self.task_manager.get_failed_tasks(),
+                self.task_manager.get_task_history(),
                 chat_history,
             )
 

@@ -5,8 +5,11 @@ VISION_EXPERT = AgentPersona(
     name="VisionExpert",
     description="Vision-focused agent that uses screenshots with numbered bounding boxes for navigation",
     expertise_areas=[
-        "Visual UI analysis", "Screenshot interpretation", "Bounding box navigation",
-        "Action selection from visual cues", "Android UI patterns"
+        "Visual UI analysis",
+        "Screenshot interpretation",
+        "Bounding box navigation",
+        "Action selection from visual cues",
+        "Android UI patterns",
     ],
     allowed_tools=[
         Tools.tap_by_index.__name__,
@@ -15,18 +18,17 @@ VISION_EXPERT = AgentPersona(
         Tools.press_key.__name__,
         Tools.start_app.__name__,
         Tools.complete.__name__,
-        Tools.remember.__name__
+        Tools.remember.__name__,
     ],
     required_context=[
-        "screenshot",      # Screenshot for visual analysis
-        "ui_cache_only"    # Cache UI elements for tap_by_index without sending text to LLM
+        "screenshot",  # Screenshot for visual analysis
+        "ui_cache_only",  # Cache UI elements for tap_by_index without sending text to LLM
     ],
     user_prompt="""
 **Task:** {goal}
 
 Analyze the screenshot and decide your next action. Explain briefly what you see and which numbered element you'll interact with, then provide your action code.
 """,
-
     system_prompt="""You are an AI assistant specialized in Android UI navigation using visual analysis.
 
 ## Your Current Task
@@ -72,5 +74,5 @@ tap_by_index(5)
 - Focus on the visual elements, not text descriptions
 
 You will receive screenshots with numbered bounding boxes. Analyze visually and take the most appropriate action to complete the task.
-"""
+""",
 )

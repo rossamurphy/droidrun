@@ -5,14 +5,16 @@ This module provides the ContextInjectionManager class that manages different ag
 each with specific system prompts, contexts, and tool subsets tailored for specialized tasks.
 """
 
-#import chromadb
-import json
 import logging
-from typing import List, Optional
-
+from typing import Optional, List, Dict
 from droidrun.agent.context.agent_persona import AgentPersona
 
+# import chromadb
+import json
+from pathlib import Path
+
 logger = logging.getLogger("droidrun")
+
 
 class ContextInjectionManager:
     """
@@ -25,28 +27,24 @@ class ContextInjectionManager:
     - Providing context-aware configurations for CodeActAgent instances
     """
 
-    def __init__(
-            self,
-            personas: List[AgentPersona]
-        ):
+    def __init__(self, personas: List[AgentPersona]):
         """Initialize the Context Injection Manager with predefined personas."""
 
         self.personas = {}
         for persona in personas:
             self.personas[persona.name] = persona
 
-
     def _load_persona(self, data: str) -> AgentPersona:
         persona = json.loads(data)
         logger.info(f"🎭 Loaded persona: {persona['name']}")
         return AgentPersona(
-            name=persona['name'],
-            system_prompt=persona['system_prompt'],
-            allowed_tools=persona['allowed_tools'],
-            description=persona['description'],
-            expertise_areas=persona['expertise_areas'],
-            user_prompt=persona['user_prompt'],
-            required_context=persona['required_context'],
+            name=persona["name"],
+            system_prompt=persona["system_prompt"],
+            allowed_tools=persona["allowed_tools"],
+            description=persona["description"],
+            expertise_areas=persona["expertise_areas"],
+            user_prompt=persona["user_prompt"],
+            required_context=persona["required_context"],
         )
 
     def get_persona(self, agent_type: str) -> Optional[AgentPersona]:
@@ -60,15 +58,7 @@ class ContextInjectionManager:
             AgentPersona instance or None if not found
         """
 
-        # If requesting "Default" agent and no "Default" persona exists,
-        # return the first persona in the list (fallback behavior)
-        if agent_type == "Default" and agent_type not in self.personas:
-            if self.personas:
-                return list(self.personas.values())[0]
-            else:
-                return None
-
         return self.personas.get(agent_type)
 
-    def get_all_personas(self) -> List[str]:
+    def get_all_personas(self) -> Dict[str, str]:
         return self.personas

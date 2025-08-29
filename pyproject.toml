@@ -14,6 +14,7 @@ dependencies = [
     "openai>=1.0.0",
     "anthropic>=0.7.0",
     "pillow>=10.0.0",
+    "adbutils==2.10.1",
     "python-dotenv>=1.0.0",
     "llama-index",
     "llama-index-callbacks-arize-phoenix",
