@@ -5,6 +5,7 @@ UI Actions - Core UI interaction tools for Android device control.
 import os
 import io
 import json
+import shlex
 import time
 import logging
 from llama_index.core.workflow import Context
@@ -17,13 +18,20 @@ from droidrun.agent.common.events import (
     TapActionEvent,
     DragActionEvent,
 )
+from eval.android_env_client import AndroidEnvClient
 from droidrun.tools.tools import Tools
 from adbutils import adb
 import requests
 import base64
+import asyncio
+import math
 
 logger = logging.getLogger("droidrun-tools")
 PORTAL_DEFAULT_TCP_PORT = 8080
+
+JEEVES_PACKAGE = "com.jeeves"
+JEEVES_SERVICE = f"{JEEVES_PACKAGE}/.JeevesService"
+FLASH_TOUCH_ACTION = "com.jeeves.FLASH_TOUCH"
 
 
 class AdbTools(Tools):
@@ -34,6 +42,10 @@ class AdbTools(Tools):
         serial: str | None = None,
         use_tcp: bool = False,
         remote_tcp_port: int = PORTAL_DEFAULT_TCP_PORT,
+        host_volume_path: str = "/opt/shared",
+        container_mount_path: str = "opt/shared",
+        client: Optional[AndroidEnvClient] = None,
+        enable_jeeves: bool = True,
     ) -> None:
         """Initialize the AdbTools instance.
 
@@ -48,7 +60,7 @@ class AdbTools(Tools):
         self.tcp_forwarded = False
 
         self._ctx = None
-        # Instance‐level cache for clickable elements (index-based tapping)
+        # Instance-level cache for clickable elements (index-based tapping)
         self.clickable_elements_cache: List[Dict[str, Any]] = []
         self.last_screenshot = None
         self.reason = None
@@ -61,11 +73,30 @@ class AdbTools(Tools):
         # Trajectory saving level
         self.save_trajectories = "none"
 
+        self.recording_process: Optional[asyncio.subprocess.Process] = None
+        self.recording_host_path: Optional[str] = None
+        self.host_volume_path = os.path.abspath(host_volume_path)  # Resolve to an absolute path
+        self.container_mount_path = container_mount_path
+
+        self.enable_jeeves = enable_jeeves
+        self.client = client
+        self.serial = serial
+
         self.setup_keyboard()
 
         # Set up TCP forwarding if requested
         if self.use_tcp:
             self.setup_tcp_forward()
+
+    def set_screenshot_save_dir(self, directory: str) -> None:
+        """Set the directory where screenshots should be saved.
+
+        Args:
+            directory: Path to directory where screenshots will be saved
+        """
+        self.screenshot_save_dir = directory
+        os.makedirs(directory, exist_ok=True)
+        logger.info(f"Screenshot save directory set to: {directory}")
 
     def setup_tcp_forward(self) -> bool:
         """
@@ -121,7 +152,7 @@ class AdbTools(Tools):
                 c.close()
 
                 self.tcp_forwarded = False
-                logger.debug(f"TCP port forwarding removed")
+                logger.debug("TCP port forwarding removed")
                 return True
             return True
         except Exception as e:
@@ -280,7 +311,6 @@ class AdbTools(Tools):
             logger.debug(f"Tapped element with index {index} at coordinates ({x}, {y})")
 
             # Emit coordinate action event for trajectory recording
-
             if self._ctx:
                 element_text = element.get("text", "No text")
                 element_class = element.get("className", "Unknown class")
@@ -363,7 +393,7 @@ class AdbTools(Tools):
         start_y: int,
         end_x: int,
         end_y: int,
-        duration_ms: float = 300,
+        duration_ms: int = 300,
     ) -> bool:
         """
         Performs a straight-line swipe gesture on the device screen.
@@ -373,7 +403,7 @@ class AdbTools(Tools):
             start_y: Starting Y coordinate
             end_x: Ending X coordinate
             end_y: Ending Y coordinate
-            duration: Duration of swipe in seconds
+            duration_ms: Duration of swipe in seconds
         Returns:
             Bool indicating success or failure
         """
@@ -401,7 +431,9 @@ class AdbTools(Tools):
             return False
 
     @Tools.ui_action
-    def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 3) -> bool:
+    def drag(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 3
+    ) -> bool:
         """
         Performs a straight-line drag and drop gesture on the device screen.
         Args:
@@ -409,31 +441,31 @@ class AdbTools(Tools):
             start_y: Starting Y coordinate
             end_x: Ending X coordinate
             end_y: Ending Y coordinate
-            duration: Duration of swipe in seconds
+            duration_ms: Duration of drag in milliseconds
         Returns:
             Bool indicating success or failure
         """
         try:
             logger.debug(
-                f"Dragging from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration} seconds"
+                f"Dragging from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration_ms} milliseconds"
             )
-            self.device.drag(start_x, start_y, end_x, end_y, duration)
+            self.device.drag(start_x, start_y, end_x, end_y, float(duration_ms / 1000))
 
             if self._ctx:
                 drag_event = DragActionEvent(
                     action_type="drag",
-                    description=f"Drag from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration} seconds",
+                    description=f"Drag from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration_ms} milliseconds",
                     start_x=start_x,
                     start_y=start_y,
                     end_x=end_x,
                     end_y=end_y,
-                    duration=duration,
+                    duration_ms=duration_ms,
                 )
                 self._ctx.write_event_to_stream(drag_event)
 
-            time.sleep(duration)
+            time.sleep(duration_ms / 1000)
             logger.debug(
-                f"Dragged from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration} seconds"
+                f"Dragged from ({start_x}, {start_y}) to ({end_x}, {end_y}) in {duration_ms} milliseconds"
             )
             return True
         except ValueError as e:
@@ -477,8 +509,8 @@ class AdbTools(Tools):
                 # Encode the text to Base64
                 encoded_text = base64.b64encode(text.encode()).decode()
 
-                cmd = f'content insert --uri "content://com.jeeves/keyboard/input" --bind base64_text:s:"{encoded_text}"'
-                self.device.shell(cmd)
+                # cmd = f'content insert --uri "content://com.jeeves/keyboard/input" --bind base64_text:s:"{encoded_text}"'
+                # self.device.shell(cmd)
 
             if self._ctx:
                 input_event = InputTextActionEvent(
@@ -511,13 +543,13 @@ class AdbTools(Tools):
             if self._ctx:
                 key_event = KeyPressActionEvent(
                     action_type="key_press",
-                    description=f"Pressed key BACK",
+                    description="Pressed key BACK",
                     keycode=4,
                     key_name="BACK",
                 )
                 self._ctx.write_event_to_stream(key_event)
 
-            return f"Pressed key BACK"
+            return "Pressed key BACK"
         except ValueError as e:
             return f"Error: {str(e)}"
 
@@ -758,6 +790,22 @@ class AdbTools(Tools):
         """
         return self.memory.copy()
 
+    def _flash_touch_via_jeeves(self, x: int, y: int, execute_touch: bool = True):
+        """Send flash-touch command via Jeeves."""
+        if not self.enable_jeeves:
+            return False
+
+        try:
+            cmd = f"am broadcast -a {FLASH_TOUCH_ACTION} --ei x {str(x)} --ei y {str(y)} --ez execute {str(execute_touch).lower()}"
+            self.device.shell(cmd)
+
+            logger.debug(f"🎩 Jeeves flash-touch: ({x}, {y}) execute={execute_touch}")
+            return True
+
+        except Exception as e:
+            logger.debug(f"Error sending Jeeves flash-touch: {e}")
+            return False
+
     def get_state(self, serial: Optional[str] = None) -> Dict[str, Any]:
         """
         Get both the a11y tree and phone state in a single call using the combined /state endpoint.
@@ -932,58 +980,107 @@ class AdbTools(Tools):
                 "message": f"Error during ping: {str(e)}",
             }
 
+    async def start_recording(
+        self,
+        dpath: os.PathLike,
+        output_filename: str = "recording.mp4",
+        bit_rate_mbps: int = 8,
+        max_file_size_mb: int = 400,
+    ) -> str:
+        """
+        Start a screen recording, saving it to the task-specific directory.
 
-def _shell_test_cli(serial: str, command: str) -> tuple[str, float]:
-    """
-    Run an adb shell command using the adb CLI and measure execution time.
-    Args:
-        serial: Device serial number
-        command: Shell command to run
-    Returns:
-        Tuple of (output, elapsed_time)
-    """
-    import time
-    import subprocess
+        Args:
+            dpath: The directory path on the HOST for the current task's results.
+            output_filename: The name of the video file.
 
-    adb_cmd = ["adb", "-s", serial, "shell", command]
-    start = time.perf_counter()
-    result = subprocess.run(adb_cmd, capture_output=True, text=True)
-    elapsed = time.perf_counter() - start
-    output = result.stdout.strip() if result.returncode == 0 else result.stderr.strip()
-    return output, elapsed
+        Returns:
+            A confirmation message or an error string.
+        """
+        if self.recording_process:
+            return "Error: A recording is already in progress."
 
+        # --- Calculate time limit from file size and bit rate ---
+        # (Size in Megabytes * 8 bits_per_byte) / Megabits_per_second = Duration in seconds
+        # This prevents the recording from exceeding the specified file size.
+        max_duration_seconds = math.ceil((max_file_size_mb * 8) / bit_rate_mbps)
 
-def _shell_test():
-    device = adb.device("emulator-5554")
-    # Native Python adb client
-    start = time.time()
-    res = device.shell("echo 'Hello, World!'")
-    end = time.time()
-    print(f"[Native] Shell execution took {end - start:.3f} seconds: {res}")
+        # --- Path Translation Logic (remains the same) ---
+        abs_dpath_host = os.path.abspath(dpath)
+        if not abs_dpath_host.startswith(self.host_volume_path):
+            return (
+                f"Error: The provided path '{dpath}' is not inside the configured host volume "
+                f"path '{self.host_volume_path}'."
+            )
 
-    start = time.time()
-    res = device.shell("content query --uri content://com.jeeves/state")
-    end = time.time()
-    print(f"[Native] Shell execution took {end - start:.3f} seconds: phone_state")
+        container_dpath = abs_dpath_host.replace(
+            self.host_volume_path, self.container_mount_path, 1
+        )
+        container_recording_path = os.path.join(container_dpath, output_filename)
+        self.recording_host_path = os.path.join(abs_dpath_host, output_filename)
 
-    # CLI version
-    output, elapsed = _shell_test_cli("emulator-5554", "echo 'Hello, World!'")
-    print(f"[CLI] Shell execution took {elapsed:.3f} seconds: {output}")
+        try:
+            # Get the directory part of the path and create it, including parents
+            output_dir = os.path.dirname(container_recording_path)
+            os.makedirs(output_dir, exist_ok=True)
+            logger.debug(f"Ensured recording directory exists: {output_dir}")
+        except OSError as e:
+            return f"Error creating directory for recording: {e}"
 
-    output, elapsed = _shell_test_cli(
-        "emulator-5554", "content query --uri content://com.jeeves/state"
-    )
-    print(f"[CLI] Shell execution took {elapsed:.3f} seconds: phone_state")
+        logger.info(f"Serial: {self.serial}")
+        logger.info(f"Path: {container_recording_path}")
+        logger.info(f"Bitrate: {bit_rate_mbps}")
+        logger.info(f"Max Duration: {max_duration_seconds}")
+        cmd = (
+            f"scrcpy --serial {self.serial} "
+            f"--record '{container_recording_path}' "
+            f"--video-bit-rate {bit_rate_mbps}M "  # Set the bit rate
+            f"--no-audio "  # Need this because the docker container version of the emulator doesn't have mic support
+            f"--no-playback "
+            f"--time-limit {max_duration_seconds} "  # Set the calculated time limit
+            f"--show-touches"
+        )
+        logger.info(f"Attempting to run this command {cmd}")
 
+        try:
+            # Use shlex.split to parse the command and exec to run it directly
+            self.recording_process = await asyncio.create_subprocess_exec(*shlex.split(cmd))
+            logger.info(
+                f"Started recording for device {self.serial}. Saving to {self.recording_host_path}"
+            )
+            return "Recording started."
+        except Exception as e:
+            logger.error(f"Failed to start recording process: {e}")
+            return f"Error: Failed to start recording process: {e}"
 
-def _list_packages():
-    tools = AdbTools()
-    print(tools.list_packages())
+    async def stop_recording(self) -> str:
+        """Stops the current screen recording."""
+        if not self.recording_process:
+            return "Error: No recording is currently in progress."
 
+        # Check if the process has already terminated
+        if self.recording_process.returncode is None:
+            # The process is still running, so we need to stop it.
+            try:
+                self.recording_process.send_signal(signal.SIGINT)
+                await self.recording_process.wait()
+                logger.info("Gracefully stopped recording process.")
+            except ProcessLookupError:
+                # Handle the rare case where the process terminates right after our check
+                logger.warning("Recording process not found, it likely terminated on its own.")
+            except Exception as e:
+                logger.error(f"Failed to stop running recording process: {e}")
+                return f"Error: Failed to stop recording: {e}"
+        else:
+            # The process had already finished.
+            logger.info(
+                f"Recording process already terminated with code: {self.recording_process.returncode}"
+            )
 
-def _start_app():
-    tools = AdbTools()
-    tools.start_app("com.android.settings", ".Settings")
+        self.recording_process = None
+        final_message = f"Recording stopped. Video saved to {self.recording_host_path}"
+        logger.info(final_message)
+        return final_message
 
 
 def _shell_test_cli(serial: str, command: str) -> tuple[str, float]:
