@@ -46,9 +46,7 @@ class SimpleCodeExecutor:
 
         # check if tools is a dictionary
         if isinstance(tools, dict):
-            logger.debug(
-                f"🔧 Initializing SimpleCodeExecutor with tools: {tools.items()}"
-            )
+            logger.debug(f"🔧 Initializing SimpleCodeExecutor with tools: {tools.items()}")
             for tool_name, tool_function in tools.items():
                 if asyncio.iscoroutinefunction(tool_function):
                     # If the function is async, convert it to sync
@@ -93,7 +91,7 @@ class SimpleCodeExecutor:
             str: Output from the execution, including print statements.
         """
         # Update UI elements before execution
-        self.globals['ui_state'] = await ctx.get("ui_state", None)
+        self.globals["ui_state"] = await ctx.get("ui_state", None)
 
         # Capture stdout and stderr
         stdout = io.StringIO()
