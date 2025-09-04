@@ -269,9 +269,13 @@ class AdbTools(Tools):
             return None
 
         try:
-            # Check if we have cached elements
+            # ALWAYS refresh elements first to ensure we tap on current screen state
+            refresh_result = self.get_state()
+            if refresh_result.get("error"):
+                return f"Error: Could not refresh elements before tap: {refresh_result.get('error')}"
+            
             if not self.clickable_elements_cache:
-                return "Error: No UI elements cached. Call get_state first."
+                return "Error: No UI elements found on current screen."
 
             # Find the element with the given index (including in children)
             element = find_element_by_index(self.clickable_elements_cache, index)
@@ -344,6 +348,16 @@ class AdbTools(Tools):
                     response_parts.append(f"Contains text: {' | '.join(child_texts)}")
 
             response_parts.append(f"Coordinates: ({x}, {y})")
+
+            # Refresh element cache after tap to prepare for next operation
+            try:
+                refreshed_state = self.get_state()
+                if refreshed_state.get("error"):
+                    response_parts.append("Warning: Could not refresh element cache after tap")
+                else:
+                    response_parts.append(f"Cache updated: {len(self.clickable_elements_cache)} elements")
+            except Exception as e:
+                response_parts.append(f"Warning: Post-tap cache refresh failed: {str(e)}")
 
             return " | ".join(response_parts)
         except ValueError as e:
