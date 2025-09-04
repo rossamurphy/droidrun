@@ -27,6 +27,7 @@ from droidrun.agent.oneflows.reflector import Reflector
 from droidrun.agent.planner import PlannerAgent
 from droidrun.agent.utils.trajectory import Trajectory
 from droidrun.tools import Tools, describe_tools
+from droidrun.tools.adb import AdbTools
 
 logger = logging.getLogger("droidrun")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -64,7 +65,7 @@ class DroidAgent(Workflow):
         self,
         goal: str,
         llm: LLM,
-        tools: Tools,
+        tools: AdbTools,
         personas: List[AgentPersona] = [DEFAULT],
         max_steps: int = 15,
         timeout: int = 1000,
@@ -125,6 +126,7 @@ class DroidAgent(Workflow):
         self.task_iter = None
         self.cim = ContextInjectionManager(personas=personas)
         self.current_episodic_memory = None
+        self.screenshots = []
 
         logger.info("🤖 Initializing DroidAgent...")
         self.tool_list = describe_tools(tools)
@@ -217,15 +219,21 @@ class DroidAgent(Workflow):
                 reflection=reflection,
             )
 
+            # TODO - now, ScreenshotEvents come off this stream
+            # and when they do, they are caught by the handle_stream_event method
+            # which makes sure that they are correspondingly saved to the 'trajectory'
+            # attribute of the DroidAgent.
+
             async for nested_ev in handler.stream_events():
                 # take a screenshot before each asking LLM step
                 if self.save_trajectory:
-                    if hasattr(self.tools_instance, "take_annotated_screenshot"):
-                        if isinstance(nested_ev, TaskInputEvent):
-                            # take an annotated screenshot at every juncture where you are asking
-                            # something of an LLM (with save_for_llm=False for dashboard use)
-                            # (this is to try and stop duplicating screenshots in the history)
-                            await self.tools_instance.take_annotated_screenshot()
+                    if hasattr(self.tools_instance, "device"):
+                        if hasattr(self.tools_instance.device, "screenshot"):
+                            if isinstance(nested_ev, TaskInputEvent):
+                                # take an annotated screenshot at every juncture where you are asking
+                                # something of an LLM (with save_for_llm=False for dashboard use)
+                                # (this is to try and stop duplicating screenshots in the history)
+                                self.tools_instance.take_screenshot()
                     # Removed fallback - only use annotated screenshots
                 self.handle_stream_event(nested_ev, ctx)
 
