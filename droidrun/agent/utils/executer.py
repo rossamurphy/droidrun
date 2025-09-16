@@ -80,7 +80,7 @@ class SimpleCodeExecutor:
                 **{k: v for k, v in self.globals.items() if k not in self.locals},
             }
 
-    async def execute(self, ctx: Context, code: str) -> str:
+    async def execute(self, ctx: Context, code: str) -> Dict[str, Any]:
         """
         Execute Python code and capture output and return values.
 
@@ -128,4 +128,12 @@ class SimpleCodeExecutor:
             output = f"Error: {type(e).__name__}: {str(e)}\n"
             output += traceback.format_exc()
 
-        return output
+        # TODO - maybe figure out why these (screenshots and ui_states) are actually not available
+        # in the globals, and see if we require them...
+        result = {
+            "output": output,
+            "screenshots": [],
+            "ui_states": [],
+        }
+
+        return result

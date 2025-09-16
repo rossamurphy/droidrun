@@ -113,17 +113,17 @@ class CodeActAgent(Workflow):
         if ev.remembered_info:
             self.remembered_info = ev.remembered_info
 
-        logger.debug("  - Adding goal to memory.")
-        goal = user_input
+        logger.debug("  - Adding task to memory.")
+        task = user_input
         self.user_message = ChatMessage(
             role="user",
             content=PromptTemplate(self.user_prompt or DEFAULT_CODE_ACT_USER_PROMPT).format(
-                goal=goal
+                task=task
             ),
         )
         self.no_thoughts_prompt = ChatMessage(
             role="user",
-            content=PromptTemplate(DEFAULT_NO_THOUGHTS_PROMPT).format(goal=goal),
+            content=PromptTemplate(DEFAULT_NO_THOUGHTS_PROMPT).format(task=task),
         )
 
         await self.chat_memory.aput(self.user_message)
@@ -142,12 +142,12 @@ class CodeActAgent(Workflow):
         ctx.write_event_to_stream(ev)
 
         if self.steps_counter >= self.max_steps:
-            ev = TaskEndEvent(
+            end_ev = TaskEndEvent(
                 success=False,
                 reason=f"Reached max step count of {self.max_steps} steps",
             )
-            ctx.write_event_to_stream(ev)
-            return ev
+            ctx.write_event_to_stream(end_ev)
+            return end_ev
 
         self.steps_counter += 1
         logger.info(f"🧠 Step {self.steps_counter}: Thinking...")

@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List
 
 from llama_index.core.workflow import Event
@@ -113,7 +114,34 @@ class Trajectory:
             json.dump(serializable_events, f, indent=2)
 
         if screenshots:
+            logger.info(f"Saving {len(screenshots)} screenshots to trajectory")
             self.create_screenshot_gif(os.path.join(directory, "video.gif"), screenshots)
+
+            # Also save individual screenshots if they exist
+            screenshots_dir = os.path.join(directory, "screenshots")
+            os.makedirs(screenshots_dir, exist_ok=True)
+            logger.info(f"Created screenshots directory: {screenshots_dir}")
+
+            for i, screenshot_dict in enumerate(screenshots):
+                try:
+                    bytes_data = screenshot_dict.get("image_data", None)
+                    if bytes_data:
+                        timestamp = screenshot_dict.get("timestamp", time.time())
+                        from datetime import datetime
+                        timestamp_str = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        filename = f"screenshot_{i:03d}_{timestamp_str}.png"
+                        filepath = os.path.join(screenshots_dir, filename)
+
+                        with open(filepath, 'wb') as f:
+                            f.write(bytes_data)
+
+                        logger.info(f"Screenshot {i} saved to: {filepath}")
+                    else:
+                        logger.warning(f"Screenshot {i} has no image_data")
+                except Exception as e:
+                    logger.warning(f"Failed to save screenshot {i}: {e}")
+        else:
+            logger.info("No screenshots provided to save_trajectory method")
 
         return json_path
 
