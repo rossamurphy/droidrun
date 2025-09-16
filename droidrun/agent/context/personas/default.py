@@ -24,7 +24,7 @@ DEFAULT = AgentPersona(
         Tools.complete.__name__,
     ],
     required_context=[
-        "ui_state",
+        # "ui_state",
         "screenshot",
     ],
     user_prompt="""
