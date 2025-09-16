@@ -25,6 +25,7 @@ DEFAULT = AgentPersona(
     ],
     required_context=[
         # "ui_state",
+        # "phone_state",
         "screenshot",
     ],
     user_prompt="""
