@@ -18,7 +18,7 @@ from droidrun.agent.codeact.events import (
     TaskThinkingEvent,
     EpisodicMemoryEvent,
 )
-from droidrun.agent.common.events import ScreenshotEvent, RecordUIStateEvent
+from droidrun.agent.common.events import RecordPhoneStateEvent, ScreenshotEvent, RecordUIStateEvent
 from droidrun.agent.utils import chat_utils
 from droidrun.agent.utils.executer import SimpleCodeExecutor
 from droidrun.agent.codeact.prompts import (
@@ -182,12 +182,24 @@ class CodeActAgent(Workflow):
                     chat_history = await chat_utils.add_ui_text_block(
                         state["a11y_tree"], chat_history
                     )
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ Error retrieving UI state from the connected device. Is the Accessibility Service enabled?"
+                    )
+
+            if context == "phone_state":
+                try:
+                    state = self.tools.get_state()
+                    await ctx.set("phone_state", state["phone_state"])
+                    ctx.write_event_to_stream(
+                        RecordPhoneStateEvent(phone_state=state["phone_state"])
+                    )
                     chat_history = await chat_utils.add_phone_state_block(
                         state["phone_state"], chat_history
                     )
                 except Exception as e:
                     logger.warning(
-                        f"⚠️ Error retrieving state from the connected device. Is the Accessibility Service enabled?"
+                        f"⚠️ Error retrieving phone state from the connected device. Is the Accessibility Service enabled?"
                     )
 
             if context == "packages":

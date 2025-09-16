@@ -30,7 +30,7 @@ async def add_reflection_summary(
 ) -> List[ChatMessage]:
     """Add reflection summary and advice to help the planner understand what went wrong and what to do differently."""
 
-    reflection_text = "\n### The last task failed. You have additional information about what happenend. \nThe Reflection from Previous Attempt:\n"
+    reflection_text = "\n### The last task failed. You have additional information about what happened. \nThe Reflection from Previous Attempt:\n"
 
     if reflection.summary:
         reflection_text += f"**What happened:** {reflection.summary}\n\n"
@@ -215,13 +215,15 @@ def estimate_chat_tokens(chat_history: List[ChatMessage]) -> int:
             total_words += len(msg.content.split())
         elif isinstance(msg.content, list):
             for block in msg.content:
-                if hasattr(block, 'text') and block.text:
+                if hasattr(block, "text") and block.text:
                     total_words += len(block.text.split())
 
     return int(total_words * 4 / 3)
 
 
-def should_force_summarization(chat_history: List[ChatMessage], token_threshold: int = 24000) -> bool:
+def should_force_summarization(
+    chat_history: List[ChatMessage], token_threshold: int = 24000
+) -> bool:
     """
     Check if chat history exceeds token threshold and needs summarization.
     Default threshold: 24k tokens (18k words)
@@ -255,15 +257,13 @@ IMPORTANT: You MUST call remember() with your summary before taking any other ac
 
 
 async def handle_context_length_management(
-    chat_history: List[ChatMessage],
-    task_goal: str,
-    keep_recent_turns: int = 3
+    chat_history: List[ChatMessage], task_goal: str, keep_recent_turns: int = 3
 ) -> tuple[List[ChatMessage], bool]:
     """
     Handle context length management by forcing summarization when needed.
-    
+
     Returns:
-        - Modified chat history 
+        - Modified chat history
         - Boolean indicating if summarization was triggered
     """
     if not should_force_summarization(chat_history):
@@ -273,14 +273,13 @@ async def handle_context_length_management(
     summarization_prompt = create_summarization_prompt(chat_history, task_goal)
 
     # Add forced summarization message
-    summarization_msg = ChatMessage(
-        role="system",
-        content=summarization_prompt
-    )
+    summarization_msg = ChatMessage(role="system", content=summarization_prompt)
 
     # Keep system message, recent turns, and add summarization prompt
     system_msgs = [msg for msg in chat_history if msg.role == "system"]
-    recent_msgs = chat_history[-keep_recent_turns:] if len(chat_history) > keep_recent_turns else chat_history
+    recent_msgs = (
+        chat_history[-keep_recent_turns:] if len(chat_history) > keep_recent_turns else chat_history
+    )
 
     new_history = system_msgs + recent_msgs + [summarization_msg]
 
@@ -288,7 +287,7 @@ async def handle_context_length_management(
 
 
 async def get_reflection_block(reflections: List[Reflection]) -> ChatMessage:
-    reflection_block = "\n### You also have additional Knowledge to help you guide your current task from previous expierences:\n"
+    reflection_block = "\n### You also have additional Knowledge to help you guide your current task from previous experiences:\n"
     for reflection in reflections:
         reflection_block += f"**{reflection.advice}\n"
 
@@ -413,8 +412,7 @@ def extract_code_and_thought(response_text: str) -> Tuple[Optional[str], str]:
 
 
 def normalize_conversation(
-    messages: List[ChatMessage],
-    max_tokens: Optional[int] = None
+    messages: List[ChatMessage], max_tokens: Optional[int] = None
 ) -> List[ChatMessage]:
     """
     Normalize conversation to ensure proper structure:
@@ -452,9 +450,7 @@ def normalize_conversation(
     # Handle token limits if specified
     if max_tokens:
         normalized_conversation = truncate_conversation(
-            normalized_conversation,
-            max_tokens,
-            system_message
+            normalized_conversation, max_tokens, system_message
         )
 
     # Return: system message first, then normalized conversation
@@ -481,10 +477,7 @@ def ensure_alternation(messages: List[ChatMessage]) -> List[ChatMessage]:
     # Ensure conversation starts with user message
     if normalized and normalized[0].role != "user":
         # Insert generic user message at the beginning
-        generic_user = ChatMessage(
-            role="user",
-            content="Please help me with this task."
-        )
+        generic_user = ChatMessage(role="user", content="Please help me with this task.")
         normalized.insert(0, generic_user)
 
     # Final pass: ensure perfect alternation
@@ -510,9 +503,7 @@ def ensure_alternation(messages: List[ChatMessage]) -> List[ChatMessage]:
 
 
 def truncate_conversation(
-    conversation: List[ChatMessage],
-    max_tokens: int,
-    system_message: ChatMessage
+    conversation: List[ChatMessage], max_tokens: int, system_message: ChatMessage
 ) -> List[ChatMessage]:
     """
     Truncate conversation to fit token limit while preserving recent context.
@@ -560,6 +551,7 @@ def truncate_conversation(
 
     if len(truncated) != len(conversation):
         logger.info(
-            f"Truncated conversation from {len(conversation)} to {len(truncated)} messages to fit token limit")
+            f"Truncated conversation from {len(conversation)} to {len(truncated)} messages to fit token limit"
+        )
 
     return truncated

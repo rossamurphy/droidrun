@@ -65,3 +65,7 @@ class StartAppEvent(MacroEvent):
 
 class RecordUIStateEvent(Event):
     ui_state: list[Dict[str, Any]]
+
+
+class RecordPhoneStateEvent(Event):
+    phone_state: list[Dict[str, Any]]
