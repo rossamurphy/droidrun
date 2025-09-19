@@ -519,10 +519,18 @@ class AdbTools(Tools):
                     return f"Error: HTTP request failed with status {response.status_code}: {response.text}"
 
             else:
-                # Fallback to content provider method
-                # Encode the text to Base64
-                encoded_text = base64.b64encode(text.encode()).decode()
+                # Fallback to direct ADB input command
+                logger.debug("TCP not available, using direct ADB input command")
 
+                # Use direct ADB input text command as fallback
+                # Escape special characters for shell
+                escaped_text = text.replace('"', '\\"').replace('\\', '\\\\')
+                cmd = f'input text "{escaped_text}"'
+                result = self.device.shell(cmd)
+                logger.debug(f"ADB input command result: {result}")
+
+                # Alternative fallback: content provider method (if Jeeves is available)
+                # encoded_text = base64.b64encode(text.encode()).decode()
                 # cmd = f'content insert --uri "content://com.jeeves/keyboard/input" --bind base64_text:s:"{encoded_text}"'
                 # self.device.shell(cmd)
 

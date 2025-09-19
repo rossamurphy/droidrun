@@ -210,6 +210,7 @@ class DroidAgent(Workflow):
                 all_tools_list=self.tool_list,
                 tools_instance=self.tools_instance,
                 debug=self.debug,
+                save_states_for_neuralui_training=True,
                 timeout=self.timeout,
             )
 

@@ -4,6 +4,11 @@ import time
 import asyncio
 import json
 import os
+import sys
+import uuid
+import base64
+from datetime import datetime
+from io import BytesIO
 from typing import List, Optional, Tuple, Union
 from llama_index.core.base.llms.types import ChatMessage, ChatResponse
 from llama_index.core.prompts import PromptTemplate
@@ -25,6 +30,15 @@ from droidrun.agent.codeact.prompts import (
     DEFAULT_CODE_ACT_USER_PROMPT,
     DEFAULT_NO_THOUGHTS_PROMPT,
 )
+
+# Add path for render.py functionality
+sys.path.append('/opt/shared/trace_analysis')
+try:
+    from render import render_ui_tree_to_improved_image
+    render_ui_tree_to_image = render_ui_tree_to_improved_image  # Alias for backward compatibility
+except ImportError:
+    logger.warning("Could not import render.py functionality. Rerendered screenshots will not be available.")
+    render_ui_tree_to_image = None
 
 from droidrun.agent.context.episodic_memory import EpisodicMemory, EpisodicMemoryStep
 from droidrun.tools import Tools
@@ -50,6 +64,7 @@ class CodeActAgent(Workflow):
         all_tools_list: Dict[str, Callable[..., Any]],
         max_steps: int = 5,
         debug: bool = False,
+        save_states_for_neuralui_training = True,
         *args,
         **kwargs,
     ):
@@ -64,6 +79,7 @@ class CodeActAgent(Workflow):
         self.no_thoughts_prompt = None
 
         self.vision = vision
+        self.save_states_for_neuralui_training = save_states_for_neuralui_training
 
         self.chat_memory = None
         self.episodic_memory = EpisodicMemory(persona=persona)
@@ -88,6 +104,11 @@ class CodeActAgent(Workflow):
             tool_descriptions=self.tool_descriptions
         )
         self.system_prompt = ChatMessage(role="system", content=self.system_prompt_content)
+
+        # Initialize run ID for neuralui training
+        if self.save_states_for_neuralui_training:
+            self.run_id = str(uuid.uuid4())
+            self.turn_counter = 0
 
         self.required_context = persona.required_context
 
@@ -174,6 +195,39 @@ class CodeActAgent(Workflow):
                         screenshot, chat_history
                     )
 
+            if context == "rerendered_screenshot":
+                try:
+                    if render_ui_tree_to_image is None:
+                        logger.warning("render.py functionality not available, skipping rerendered_screenshot")
+                        continue
+
+                    # Get UI state first
+                    state = self.tools.get_state()
+                    ui_tree = state["a11y_tree"]
+
+                    # Generate rerendered screenshot from UI tree
+                    rerendered_image = render_ui_tree_to_image(ui_tree)
+
+                    # Convert PIL image to bytes
+                    img_buffer = BytesIO()
+                    rerendered_image.save(img_buffer, format='PNG')
+                    rerendered_screenshot_bytes = img_buffer.getvalue()
+
+                    await ctx.set("rerendered_screenshot", rerendered_screenshot_bytes)
+
+                    # Add to chat history if vision is enabled
+                    if model == "DeepSeek":
+                        logger.warning(
+                            "[yellow]DeepSeek doesnt support images. Disabling rerendered screenshots[/]"
+                        )
+                    elif self.vision == True:
+                        chat_history = await chat_utils.add_screenshot_image_block(
+                            rerendered_screenshot_bytes, chat_history
+                        )
+
+                except Exception as e:
+                    logger.warning(f"Failed to generate rerendered screenshot: {e}")
+
             if context == "ui_state":
                 try:
                     state = self.tools.get_state()
@@ -207,6 +261,11 @@ class CodeActAgent(Workflow):
                     self.tools.list_packages(include_system_apps=True),
                     chat_history,
                 )
+
+
+        if self.save_states_for_neuralui_training:
+            await self._save_turn_state(ctx)
+
 
         response = await self._get_llm_response(ctx, chat_history)
         if response is None:
@@ -442,3 +501,80 @@ class CodeActAgent(Workflow):
 
         except Exception as e:
             logger.error(f"Failed to add final state observation: {e}")
+
+    async def _save_turn_state(self, ctx: Context):
+        """Save the current state for neural UI training."""
+        try:
+            self.turn_counter += 1
+
+            # Create directory structure with date hierarchy: YYYY/MM/DD/run_uuid
+            base_dir = "trace_analysis/neuralui"
+            current_date = datetime.now()
+            date_dir = os.path.join(base_dir,
+                                  current_date.strftime("%Y"),
+                                  current_date.strftime("%m"),
+                                  current_date.strftime("%d"))
+            run_dir = os.path.join(date_dir, f"run_{self.run_id}")
+            turn_dir = os.path.join(run_dir, f"turn_{self.turn_counter:03d}")
+            os.makedirs(turn_dir, exist_ok=True)
+
+            # Save metadata
+            metadata = {
+                "run_id": self.run_id,
+                "turn_id": self.turn_counter,
+                "timestamp": datetime.now().isoformat(),
+                "step_counter": self.steps_counter,
+                "required_context": self.required_context
+            }
+
+            with open(os.path.join(turn_dir, "metadata.json"), "w") as f:
+                json.dump(metadata, f, indent=2)
+
+            # Save screenshot if available
+            screenshot = await ctx.get("screenshot", None)
+            if screenshot:
+                screenshot_path = os.path.join(turn_dir, "screenshot.png")
+                with open(screenshot_path, "wb") as f:
+                    f.write(screenshot)
+                metadata["has_screenshot"] = True
+            else:
+                metadata["has_screenshot"] = False
+
+            # Save rerendered screenshot if available
+            rerendered_screenshot = await ctx.get("rerendered_screenshot", None)
+            if rerendered_screenshot:
+                rerendered_screenshot_path = os.path.join(turn_dir, "rerendered_screenshot.png")
+                with open(rerendered_screenshot_path, "wb") as f:
+                    f.write(rerendered_screenshot)
+                metadata["has_rerendered_screenshot"] = True
+            else:
+                metadata["has_rerendered_screenshot"] = False
+
+            # Save UI state if available
+            ui_state = await ctx.get("ui_state", None)
+            if ui_state:
+                ui_state_path = os.path.join(turn_dir, "ui_state.json")
+                with open(ui_state_path, "w") as f:
+                    json.dump(ui_state, f, indent=2)
+                metadata["has_ui_state"] = True
+            else:
+                metadata["has_ui_state"] = False
+
+            # Save phone state if available
+            phone_state = await ctx.get("phone_state", None)
+            if phone_state:
+                phone_state_path = os.path.join(turn_dir, "phone_state.json")
+                with open(phone_state_path, "w") as f:
+                    json.dump(phone_state, f, indent=2)
+                metadata["has_phone_state"] = True
+            else:
+                metadata["has_phone_state"] = False
+
+            # Update metadata with availability flags
+            with open(os.path.join(turn_dir, "metadata.json"), "w") as f:
+                json.dump(metadata, f, indent=2)
+
+            logger.debug(f"Saved neural UI training state for turn {self.turn_counter} in {turn_dir}")
+
+        except Exception as e:
+            logger.error(f"Failed to save neural UI training state: {e}")

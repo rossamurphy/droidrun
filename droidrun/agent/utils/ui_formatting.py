@@ -10,14 +10,14 @@ This ensures identical formatting between training and inference.
 
 def format_ui_elements_as_text(elements) -> str:
     """Convert UI elements to clean text representation with essential info preserved.
-    
+
     This function handles both:
-    - Live UI state from Android uiautomator (inference time)  
+    - Live UI state from Android uiautomator (inference time)
     - Saved UI elements from _elements.json files (training data collection)
-    
+
     Args:
         elements: UI elements data (list, dict, or JSON string)
-        
+
     Returns:
         str: Formatted UI elements text in the format:
         UI Elements:
@@ -44,8 +44,12 @@ def format_ui_elements_as_text(elements) -> str:
     if not isinstance(elements, list):
         elements = [elements]
 
+    # Flatten the nested structure recursively
+    flattened_elements = []
+    _flatten_elements(elements, flattened_elements)
+
     ui_text = "UI Elements:\n"
-    for elem in elements:
+    for elem in flattened_elements:
         if not isinstance(elem, dict):
             continue
 
@@ -87,3 +91,26 @@ def format_ui_elements_as_text(elements) -> str:
             ui_text += f"  [{idx}] {label} at {bounds}\n"
 
     return ui_text
+
+
+def _flatten_elements(elements, flattened):
+    """Recursively flatten nested UI elements with children into a flat list.
+
+    Args:
+        elements: List of UI elements that may contain 'children' fields
+        flattened: List to append flattened elements to
+    """
+    if not elements or not isinstance(elements, list):
+        return
+
+    for elem in elements:
+        if not isinstance(elem, dict):
+            continue
+
+        # Add current element to flattened list
+        flattened.append(elem)
+
+        # Recursively process children if they exist and are not empty
+        children = elem.get("children", [])
+        if children and isinstance(children, list) and len(children) > 0:
+            _flatten_elements(children, flattened)

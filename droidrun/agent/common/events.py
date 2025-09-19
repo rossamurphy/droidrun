@@ -68,4 +68,4 @@ class RecordUIStateEvent(Event):
 
 
 class RecordPhoneStateEvent(Event):
-    phone_state: list[Dict[str, Any]]
+    phone_state: Dict[str, Any]
